@@ -240,6 +240,38 @@ describe('HUD native IPC lifecycle', () => {
     expect('error' in result && result.error.message).toBe('HUD_INACTIVE');
     expect(win.showInactive).not.toHaveBeenCalled();
   });
+  // Cancel during the hide animation: an off/on pair must not start an OS
+  // screenshot for the old request. Earlier coverage only checked delivered bytes.
+  it.each(['exit', 'reopen', 'permission'] as const)('does not read pixels after cancellation during capture delay: %s', async change => {
+    const win = windowMock();
+    attachHudWindow(win as unknown as BrowserWindow);
+    const event = { sender: win.webContents };
+    await env.handlers.get('hud:active')!(event, true);
+    const pending = Promise.resolve(env.handlers.get('hud:capture')!(event, {
+      text: '这个界面说的是什么？', explicit: false,
+    })).then(() => null, error => error);
+    if (change === 'permission') {
+      env.handlers.get('hud:settings')!(event, { allowScreen: false });
+      env.handlers.get('hud:settings')!(event, { allowScreen: true });
+    } else {
+      await env.handlers.get('hud:active')!(event, false);
+      if (change === 'reopen') await env.handlers.get('hud:active')!(event, true);
+    }
+    await vi.runAllTimersAsync();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(desktopCapturer.getSources).not.toHaveBeenCalled();
+    expect(env.handlers.get('hud:get')!(event)).toMatchObject({ active: change !== 'exit', capturing: false });
+    await env.handlers.get('hud:active')!(event, false);
+  });
+  it('restores the window after native capture failure and allows the next request', async () => {
+    vi.mocked(desktopCapturer.getSources).mockRejectedValueOnce(new Error('WindowServer unavailable'));
+    const first = await runCapture(false);
+    expect('error' in first.result && first.result.error.message).toBe('HUD_CAPTURE_FAILED');
+    expect(first.win.showInactive).toHaveBeenCalledOnce();
+    const retry = await runCapture(false);
+    expect(retry.result).toEqual({ value: new Uint8Array([42]) });
+    expect(retry.win.showInactive).toHaveBeenCalledOnce();
+  });
   it('restores the latest authoritative theme instead of hard-coding vibrancy', async () => {
     rememberHudAppearance({ vibrancy: null, backgroundColor: '#1f1f1e' });
     const { win } = await runCapture(false);
@@ -293,6 +325,25 @@ describe('HUD native IPC lifecycle', () => {
   });
   // Unit: real IPC entry; missing coverage for native layer changes, bounds and restoration.
   // Minimal input: one upward step from the default floating layer.
+  it('honors a rapid exit while native fullscreen entry is still waiting', async () => {
+    const win = windowMock();
+    let fullscreen = true;
+    win.isFullScreen = () => fullscreen;
+    const nativeWin = Object.assign(win, {
+      once: (name: string, fn: () => void) => win.events.set(name, fn),
+      removeListener: (name: string) => win.events.delete(name),
+      setFullScreen: vi.fn((value: boolean) => { fullscreen = value; }),
+    });
+    attachHudWindow(nativeWin as unknown as BrowserWindow);
+    const event = { sender: win.webContents };
+    const enter = env.handlers.get('hud:active')!(event, true);
+    const exit = env.handlers.get('hud:active')!(event, false);
+    win.events.get('leave-full-screen')!();
+    await Promise.all([enter, exit]);
+    expect(env.handlers.get('hud:get')!(event)).toMatchObject({ active: false, passThrough: false });
+    expect(fullscreen).toBe(true);
+    expect(env.shortcuts.size).toBe(0);
+  });
   it('steps native window levels within bounds and restores the original window on exit', async () => {
     const win = windowMock();
     attachHudWindow(win as unknown as BrowserWindow);

@@ -258,26 +258,6 @@ html.hud-window,
 .hud-context-bar:focus-visible .hud-context-track {
   height: 4px;
 }
-.hud-footer-details-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  color: var(--text-secondary);
-  -webkit-app-region: no-drag;
-}
-.hud-footer-details-button:hover {
-  background: hsl(var(--titlebar-button-hover));
-}
-.hud-footer-details-panel {
-  z-index: 90;
-}
-.hud-footer-details-panel .flex.shrink-0 {
-  flex-wrap: wrap;
-}
-
 .hud-mode [data-chat-composer-stack] {
   gap: 0;
 }
@@ -285,20 +265,28 @@ html.hud-window,
 .hud-composer-meta-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   height: 24px;
 }
 .hud-composer-meta-row .hud-screen-control {
+  margin-inline-start: 2ch;
   flex-shrink: 0;
   align-self: auto;
 }
+.hud-weekly-quota {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
 .hud-path-chip {
   margin-left: auto;
+  margin-inline-end: 2ch;
   min-width: 0;
-  flex: 0 1 auto;
-  max-width: 65%;
+  flex: 1 1 0;
   height: 24px;
   text-align: right;
   -webkit-app-region: no-drag;

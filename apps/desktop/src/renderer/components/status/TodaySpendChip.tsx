@@ -1821,8 +1821,18 @@ export function TodaySpendChip({
 
   if (quotaOnly) {
     const weeklyIndex = chipWindows.findIndex(window => window.durationMinutes === 10080);
-    const summary = weeklyIndex >= 0 ? windowSegments[weeklyIndex] : null;
-    return <span className="text-12 tabular-nums">{summary ?? t('todaySpend.codex.noUsageDetail')}</span>;
+    const weekly = chipWindows[weeklyIndex];
+    const weeklyRollup = weeklyIndex === 0 ? rollupA : rollupB;
+    const label = t('todaySpend.codex.daysWindow', { days: 7 });
+    const summary = weekly
+      ? weekly.resetPending
+        ? `${t('todaySpend.resetPendingSegment', { label })}…`
+        : t('todaySpend.codex.windowSegment', {
+            label,
+            remaining: formatPercent(weeklyRollup?.percent ?? weekly.remainingPercent),
+          })
+      : t('hud.weeklyUnavailable');
+    return <span className={cn('text-12 tabular-nums', weekly?.alerting && 'text-[var(--error-fg)]')}>{summary}</span>;
   }
 
   return (

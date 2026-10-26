@@ -1,10 +1,18 @@
+import { useTranslation } from 'react-i18next';
 import { mountPage, subscription } from '../../ui-page/harness';
 import { HudChrome } from '../../../src/renderer/features/hud/HudChrome';
 import { HudSection } from '../../../src/renderer/components/settings/HudSection';
 import { useHudScreenAttachment } from '../../../src/renderer/features/hud/useHudScreenAttachment';
 import { DEFAULT_HUD_SETTINGS } from '../../../src/shared/hud';
-function ScreenControls() {
-  const { control } = useHudScreenAttachment('fixture', '/work/examples/current-task');
+function ScreenControls({ missingQuota = false }: { missingQuota?: boolean }) {
+  const { t } = useTranslation();
+  const summary = missingQuota
+    ? t('hud.weeklyUnavailable')
+    : t('todaySpend.codex.windowSegment', { label: t('todaySpend.codex.daysWindow', { days: 7 }), remaining: '61%' });
+  const { control } = useHudScreenAttachment(
+    'fixture', '/work/examples/a-long-project-path/current-task',
+    <span className="text-12 tabular-nums">{summary}</span>,
+  );
   return <div className="pt-12">{control}</div>;
 }
 void mountPage({
@@ -15,7 +23,7 @@ void mountPage({
       getState: () => ({
         platform: ctx.platform,
         overrides:
-          ctx.case === 'chrome'
+          ctx.case.startsWith('chrome')
             ? {
                 'hud-toggle-pass-through': {
                   code: 'F12',
@@ -45,7 +53,7 @@ void mountPage({
   render: (ctx) => (
     <main className="relative h-full overflow-auto bg-background p-4">
       <HudChrome />
-      {ctx.case === 'chrome' && <ScreenControls />}
+      {ctx.case.startsWith('chrome') && <ScreenControls missingQuota={ctx.case === 'chrome-no-quota'} />}
       {ctx.case === 'settings' || ctx.case === 'default' ? (
         <div className="pt-10">
           <HudSection />

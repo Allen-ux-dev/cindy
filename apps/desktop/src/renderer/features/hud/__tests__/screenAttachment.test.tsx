@@ -1,3 +1,4 @@
+import { dispatchHudScreenSubmission, hudScreenPreflight } from '../screenSubmission';
 // @vitest-environment jsdom
 // User regression: successful capture followed by rejected send must retain one-shot
 // intent. Public hook/checkbox entry; native IPC tests cannot cover composer acceptance.
@@ -159,4 +160,58 @@ it('tracks consent transitions even when React batches an off/on pair', async ()
   });
   expect(store.getHudState().active).toBe(true);
   expect(store.getHudCaptureGeneration()).toBeGreaterThan(permissionEpoch);
+});
+
+// Accepted outbox/background work owns its pixels. Composer cleanup or a later
+// permission change must not revoke that already accepted submission.
+it('keeps an accepted capture valid after composer cleanup and later consent changes', async () => {
+  Object.assign(window, {
+    electronAPI: {
+      hud: { capture: async () => new Uint8Array([1]) },
+      cacheImageFromBuffer: async () => ({ url: 'test://screen.png' }),
+    },
+  });
+  let current!: ReturnType<typeof useHudScreenAttachment>;
+  function Composer() {
+    current = useHudScreenAttachment('accepted');
+    return current.control;
+  }
+  const view = render(<Composer />);
+  let capture!: NonNullable<Awaited<ReturnType<typeof current.prepare>>>;
+  await act(async () => { capture = (await current.prepare('look at this screen'))!; });
+  act(() => capture.accept());
+  view.unmount();
+  consent.generation++;
+  expect(() => capture.assertCurrent()).not.toThrow();
+});
+
+// The store invokes this preflight after other asynchronous checks. Test both
+// cancellation before acceptance and the accepted remote outbox lifetime.
+it.each([false, true])('checks a deferred preflight with accepted=%s', async accepted => {
+  Object.assign(window, { electronAPI: {
+    hud: { capture: async () => new Uint8Array([1]) },
+    cacheImageFromBuffer: async () => ({ url: 'test://screen.png' }),
+  } });
+  let current!: ReturnType<typeof useHudScreenAttachment>;
+  function Composer() { current = useHudScreenAttachment('deferred'); return current.control; }
+  const view = render(<Composer />);
+  let capture!: NonNullable<Awaited<ReturnType<typeof current.prepare>>>;
+  await act(async () => { capture = (await current.prepare('look at this screen'))!; });
+  let finish!: (value: boolean) => void;
+  const ready = new Promise<boolean>(resolve => { finish = resolve; });
+  const preflight = hudScreenPreflight(capture, () => ready)!;
+  if (accepted) {
+    await act(async () => { expect(await dispatchHudScreenSubmission(capture, async () => true)).toBe(true); });
+  }
+  const pending = preflight();
+  const result = accepted ? expect(pending).resolves.toBe(true) : expect(pending).rejects.toThrow('capture revoked');
+  consent.generation++;
+  view.unmount();
+  finish(true);
+  await result;
+  if (!accepted) {
+    const send = vi.fn(async () => true);
+    await expect(dispatchHudScreenSubmission(capture, send)).rejects.toThrow('capture revoked');
+    expect(send).not.toHaveBeenCalled();
+  }
 });

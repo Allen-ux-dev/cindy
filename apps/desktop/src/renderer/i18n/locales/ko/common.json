@@ -17461,7 +17461,7 @@
     "captureFailed": "화면을 캡처하지 못했습니다. 메시지는 전송되지 않았습니다.",
     "fullscreen": "macOS 전체 화면을 종료한 뒤 HUD를 여세요.",
     "failed": "HUD 작업에 실패했습니다. 다시 시도하세요.",
-    "details": "7일간 남은 할당량",
+    "weeklyUnavailable": "7일 할당량 정보 없음",
     "copyPath": "전체 경로 복사",
     "pathCopied": "경로를 복사했습니다",
     "settingsAction": "HUD 설정"

@@ -1,5 +1,6 @@
+import { HudScreenRevokedError, type HudScreenSubmission } from './screenSubmission';
 import { HudPathChip } from './HudPathChip';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Monitor } from 'lucide-react';
@@ -13,7 +14,7 @@ import {
 } from '@/contexts/dataOwnerGeneration';
 
 /** Composer-scoped one-shot intent: never inherited by a different task. */
-export function useHudScreenAttachment(sessionId?: string | null, workingDir?: string | null) {
+export function useHudScreenAttachment(sessionId?: string | null, workingDir?: string | null, quota?: ReactNode) {
   const hud = useHud();
   const { t } = useTranslation();
   const [armed, setArmed] = useState(false);
@@ -27,12 +28,14 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
   }, [sessionId, hud.active]);
   async function prepare(
     text: string,
-  ): Promise<{ attachment: AttachedFile; assertCurrent(): void; accept(): void } | undefined> {
+  ): Promise<(HudScreenSubmission & { attachment: AttachedFile }) | undefined> {
     if (!hud.active || (!armed && !isHudScreenQuestion(text))) return;
     const intent = intentGeneration.current;
     const owner = getDataOwnerGeneration();
     const generation = getHudCaptureGeneration();
+    let accepted = false;
     const assertCurrent = () => {
+      if (accepted) return;
       if (
         intent !== intentGeneration.current ||
         generation !== getHudCaptureGeneration() ||
@@ -40,7 +43,7 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
         !getHudState().active ||
         !getHudState().settings.allowScreen
       )
-        throw new Error('capture revoked');
+        throw new HudScreenRevokedError();
     };
     const id = toast.loading(t('hud.capturing'));
     try {
@@ -84,12 +87,15 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
         attachment,
         assertCurrent,
         accept() {
+          if (accepted) return;
+          accepted = true;
           if (intent !== intentGeneration.current || !isDataOwnerGenerationCurrent(owner)) return;
           intentGeneration.current++;
           setArmed(false);
         },
       };
     } catch (error) {
+      if (error instanceof HudScreenRevokedError) throw error;
       const reason = extractIpcError(error)?.message;
       toast.error(
         t(
@@ -120,6 +126,7 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
         <Monitor size={13} aria-hidden="true" />
         {t('hud.thisScreen')}
       </label>
+      {quota && <span className="hud-weekly-quota">{quota}</span>}
       {workingDir && <HudPathChip path={workingDir} />}
     </div>
   ) : null;

@@ -1,3 +1,4 @@
+import { HudScreenRevokedError, type HudScreenSubmission } from '@/features/hud/screenSubmission';
 import { useHudScreenAttachment } from '@/features/hud/useHudScreenAttachment';
 import {
   useCallback,
@@ -493,6 +494,8 @@ function isPointInsideElement(
 }
 
 interface ChatInputProps {
+  /** Existing session quota, shown inline only in HUD mode. */
+  hudQuota?: ReactNode;
   onSend: (
     message: string,
     model: string,
@@ -501,6 +504,7 @@ interface ChatInputProps {
     files?: AttachedFile[],
     mentions?: MentionedResource[],
     opts?: {
+      hudScreenSubmission?: HudScreenSubmission;
       deliveryMode?: MessageDeliveryMode;
       builtInSkillIntent?: BuiltInSkillDraftIntent;
       providerId?: string | null;
@@ -1236,6 +1240,7 @@ function resolveModelThinkingIntent(input: {
 }
 
 export function ChatInput({
+  hudQuota,
   onSend,
   onComposerTyping,
   onComposerVoiceBusyChange,
@@ -1748,7 +1753,7 @@ export function ChatInput({
   const lastComposerSelectionFromRef = useRef<number | null>(null);
   const internalMentionDragActiveRef = useRef(false);
   const [workingDir, setWorkingDir] = useState<string | null>(initialWorkingDir ?? null);
-  const hudScreen = useHudScreenAttachment(sessionId, workingDir);
+  const hudScreen = useHudScreenAttachment(sessionId, workingDir, hudQuota);
   const [internalFolderOpen, setInternalFolderOpen] = useState(false);
 
   // Ref bridge for Tiptap handlePaste(粘贴管线):editorProps 闭包只建一次,
@@ -6272,12 +6277,7 @@ export function ChatInput({
           }
           // Effort synchronization may have yielded after capture preparation.
           // Revalidate consent before handing pixels to the existing send pipeline.
-          try {
-            screenshot?.assertCurrent();
-          } catch (error) {
-            toast.error(t('hud.captureFailed'));
-            throw error;
-          }
+          screenshot?.assertCurrent();
           result = await onSend(
             routedText,
             activeModel,
@@ -6286,6 +6286,7 @@ export function ChatInput({
             filesToSend,
             mentionsToSend,
             {
+              ...(screenshot ? { hudScreenSubmission: screenshot } : {}),
               deliveryMode,
               providerId: sendProviderId,
               ...(builtInSkillIntent
@@ -6308,6 +6309,7 @@ export function ChatInput({
           );
         } catch (error) {
           restoreRemoteComposerAndRelease();
+          if (error instanceof HudScreenRevokedError) toast.error(t('hud.captureFailed'));
           log.warn('send rejected:', error instanceof Error ? error.message : String(error));
           return;
         }

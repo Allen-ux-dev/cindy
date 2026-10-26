@@ -17461,7 +17461,7 @@
     "captureFailed": "未能获取画面，消息尚未发送",
     "fullscreen": "请先退出 macOS 全屏，再进入 HUD",
     "failed": "未能完成 HUD 操作",
-    "details": "7 天剩余配额",
+    "weeklyUnavailable": "暂无七天配额",
     "copyPath": "复制完整路径",
     "pathCopied": "路径已复制",
     "settingsAction": "HUD 设置"

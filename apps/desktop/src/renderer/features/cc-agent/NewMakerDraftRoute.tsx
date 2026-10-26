@@ -1,3 +1,4 @@
+import { dispatchHudScreenSubmission, hudScreenPreflight, HudScreenRevokedError, type HudScreenSubmission } from '@/features/hud/screenSubmission';
 import { useRemoteDraftDefaults, useRemoteDraftSelection, useRemoteDraftPush } from './useRemoteDraftDefaults';
 import { isModelEnabled, useModelVisibilityVersion } from '@/state/modelVisibilityPrefs';
 /**
@@ -3530,6 +3531,7 @@ export function NewMakerDraftRoute() {
         agentReferences?: AgentInputReference[];
         pastedTextRanges?: PastedTextRange[];
         slashCommandRanges?: SlashCommandRange[];
+        hudScreenSubmission?: HudScreenSubmission;
         // 推荐直接发送，不写首页草稿；失败时在新任务中恢复这份完整内容。
         recoveryDraftDoc?: JSONContent;
         onAccepted?: () => void;
@@ -3695,6 +3697,7 @@ export function NewMakerDraftRoute() {
           });
           if (isDeviceLinkDraft && !isCurrentDataOwner()) return;
           if (!proceed) return;
+          opts?.hudScreenSubmission?.assertCurrent();
 
           // Keep the original invocation so a second lookup after checkout is
           // still tied to its built-in identity, even if preflight changed its alias.
@@ -4020,6 +4023,7 @@ export function NewMakerDraftRoute() {
               markFirstSend: remoteDirectSend,
             });
             markedStartingSessionId = remoteSessionId;
+            opts?.hudScreenSubmission?.assertCurrent();
             // 草稿里选中的那条收藏跟着会话走(见 carryDraftFavoriteAnchorToSession)。锚点是
             // **控制端的 UI 态**,与被控端无关:按对端会话 id 记在本机即可,不进任何 payload。
             // 用 createArgs 里**实际提交**的 model / providerId(远程分支会按被控端目录校准)。
@@ -4068,7 +4072,7 @@ export function NewMakerDraftRoute() {
               // 远程发送受理即返回 true(只登记发件队列,不等隧道),所以这里 await 不会卡住
               // 新建页;受理后副本即可丢弃 —— 之后的投递失败由下面的回调把正文放回输入框。
               // 已过提交点:抛错也只退回视图交接,不能落到外层「创建失败」提示。
-              const accepted = await deliverRecoverableHandoff(remoteSessionId, () =>
+              const accepted = await dispatchHudScreenSubmission(opts?.hudScreenSubmission, () => deliverRecoverableHandoff(remoteSessionId, () =>
                 makerChatStore.sendMessage(
                   remoteSessionId,
                   message,
@@ -4096,6 +4100,7 @@ export function NewMakerDraftRoute() {
                     // 而非 navigate 之前:隧道往返不挡新建页,首条也已在队列里,切走不丢。
                     // 订阅失败不拦首条:最坏退回到视图挂载后按历史补齐。
                     beforeEnqueue: async () => {
+                      opts?.hudScreenSubmission?.assertCurrent();
                       try {
                         await window.electronAPI.deviceLink.subscribe(deviceId, [
                           `session:${remoteSessionId}`,
@@ -4103,6 +4108,7 @@ export function NewMakerDraftRoute() {
                       } catch (err) {
                         log.warn('[draft send] subscribe before remote first send failed', err);
                       }
+                      opts?.hudScreenSubmission?.assertCurrent();
                       return true;
                     },
                     onRemoteOptimisticFailure: (clientId) => {
@@ -4122,7 +4128,8 @@ export function NewMakerDraftRoute() {
                     },
                   },
                 ),
-              ).catch((err: unknown) => {
+              )).catch((err: unknown) => {
+                if (err instanceof HudScreenRevokedError) throw err;
                 log.warn('[draft send] remote first send threw; handing off to SessionView', err);
                 return false;
               });
@@ -4137,6 +4144,7 @@ export function NewMakerDraftRoute() {
               // 没受理(归属切换 / 会话已删等):撤回首条标记,退回下面的视图交接,与改动前行为一致。
               remoteProjectsStore.clearPendingFirstSend(remoteSessionId);
             }
+            opts?.hudScreenSubmission?.assertCurrent();
             setPending(remoteSessionId, {
               text: message,
               builtInSkillIntent: currentBuiltInSkillIntent(),
@@ -4167,6 +4175,7 @@ export function NewMakerDraftRoute() {
                 ? { slashCommandRanges: opts.slashCommandRanges }
                 : {}),
             });
+            opts?.hudScreenSubmission?.accept();
             opts?.onAccepted?.();
             clearComposerDraftAndNotify(NEW_MAKER_DRAFT_KEY);
             attachmentState.clearFiles();
@@ -4284,6 +4293,8 @@ export function NewMakerDraftRoute() {
             const preNavDraft = getComposerDraft(NEW_MAKER_DRAFT_KEY);
             const preNavDraftDoc = opts?.recoveryDraftDoc ?? preNavDraft?.text ?? null;
             const preNavBrowserComments = preNavDraft?.browserComments ?? [];
+            opts?.hudScreenSubmission?.assertCurrent();
+            opts?.hudScreenSubmission?.accept();
             navigate(`/cc-agent/${newSession.id}`, { replace: true });
             // clearDraftAndNotify (not bare clear): onSend returned false above
             // so ChatInput never cleared its editor — without notifying it, the
@@ -4585,6 +4596,7 @@ export function NewMakerDraftRoute() {
           // 草稿态 base64 图片回填到新 session 的 image cache,换成 xdt-image://
           // URL。必须在发出首条之前,否则消息里还是草稿命名空间。
           const rehydratedFiles = await rehomeDraftAttachments(files, newSession.id);
+          opts?.hudScreenSubmission?.assertCurrent();
           const sendWorkingDir = workingDir ?? newSession.workingDir;
           const preNavDraft = getComposerDraft(NEW_MAKER_DRAFT_KEY);
           const preNavDraftDoc = opts?.recoveryDraftDoc ?? preNavDraft?.text ?? null;
@@ -4643,6 +4655,7 @@ export function NewMakerDraftRoute() {
                 ? leadingSlashInvocation(message)
                 : undefined;
             if (slashMatch || leading) {
+              opts?.hudScreenSubmission?.assertCurrent();
               setPending(newSession.id, {
                 text: message,
                 builtInSkillIntent: currentBuiltInSkillIntent(),
@@ -4658,6 +4671,7 @@ export function NewMakerDraftRoute() {
                   : {}),
                 ...(deferredUiAssignment ? { deferredUiAssignment } : {}),
               });
+              opts?.hudScreenSubmission?.accept();
               handOffDraftToSession();
               navigateToSession();
               return;
@@ -4675,7 +4689,7 @@ export function NewMakerDraftRoute() {
               if (!ranges) return undefined;
               return rebaseInlineRangesAfterSlashCommandRewrite(ranges, message, dispatchedMessage);
             };
-            const sendPromise = makerChatStore.sendMessage(
+            const sendPromise = dispatchHudScreenSubmission(opts?.hudScreenSubmission, () => makerChatStore.sendMessage(
               newSession.id,
               dispatchedMessage,
               model,
@@ -4685,6 +4699,7 @@ export function NewMakerDraftRoute() {
               rehydratedFiles,
               mentions,
               {
+                beforeEnqueue: hudScreenPreflight(opts?.hudScreenSubmission),
                 ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),
                 ...(opts?.agentReferences?.length
                   ? { agentReferences: rebaseRanges(opts.agentReferences) }
@@ -4696,7 +4711,8 @@ export function NewMakerDraftRoute() {
                   ? { slashCommandRanges: rebaseRanges(opts.slashCommandRanges) }
                   : {}),
               },
-            );
+            ));
+            if (opts?.hudScreenSubmission) await sendPromise;
             handOffDraftToSession();
             navigateToSession();
             void sendPromise.then(
@@ -4722,6 +4738,7 @@ export function NewMakerDraftRoute() {
               },
             );
           } catch (err) {
+            if (err instanceof HudScreenRevokedError) throw err;
             log.error('[draft send]', err);
             restoreFirstMessageDraft();
             handOffDraftToSession();
@@ -4742,7 +4759,9 @@ export function NewMakerDraftRoute() {
           if (isRemotePrecreatedWorktreeOwnerChangedError(err)) return;
           log.error('[draft send]', err);
           toast.error(
-            isRemotePrecreatedWorktreeCleanupPendingError(err)
+            err instanceof HudScreenRevokedError
+              ? t('hud.captureFailed')
+              : isRemotePrecreatedWorktreeCleanupPendingError(err)
               ? t('ccAgent.draft.remoteWorktreeCleanupPending')
               : (getRemoteWorkingDirErrorMessage(err, t) ?? t('ccAgent.draft.createSessionFailed')),
           );

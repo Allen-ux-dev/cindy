@@ -5,7 +5,7 @@ export function createHudController(deps: {
   exit(): void;
   hide(): void;
   reveal(): void;
-  capture(): Promise<Uint8Array>;
+  capture(assertCurrent: () => void): Promise<Uint8Array>;
   changed(): void;
 }) {
   let active = false;
@@ -29,13 +29,16 @@ export function createHudController(deps: {
       if (!deps.allowed()) throw new Error('HUD_SCREEN_DISABLED');
       if (capturing) throw new Error('HUD_BUSY');
       const started = generation;
+      const assertCurrent = () => {
+        if (!active) throw new Error('HUD_INACTIVE');
+        if (!deps.allowed() || generation !== started) throw new Error('HUD_SCREEN_DISABLED');
+      };
       capturing = true;
       deps.changed();
       try {
         deps.hide();
-        const pixels = await deps.capture();
-        if (!active) throw new Error('HUD_INACTIVE');
-        if (!deps.allowed() || generation !== started) throw new Error('HUD_SCREEN_DISABLED');
+        const pixels = await deps.capture(assertCurrent);
+        assertCurrent();
         return pixels;
       } finally {
         capturing = false;

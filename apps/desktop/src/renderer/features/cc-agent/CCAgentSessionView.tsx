@@ -1,4 +1,4 @@
-import { HudFooterDetails } from '@/features/hud/HudFooterDetails';
+import { dispatchHudScreenSubmission, hudScreenPreflight, HudScreenRevokedError, type HudScreenSubmission } from '@/features/hud/screenSubmission';
 import { useHud } from '@/features/hud/store';
 import { CompanionVoicePanel } from '../bots/voice/CompanionVoicePanel';
 import { visibleVoiceCallMessages } from '../bots/voice/VoiceCallTranscript';
@@ -1814,6 +1814,7 @@ function CCAgentSessionContent({
 
   // Pending send: stored when folder picker needs to open mid-send
   const pendingSendRef = useRef<{
+    hudScreenSubmission?: HudScreenSubmission;
     deliveryMode: MessageDeliveryMode;
     builtInSkillIntent?: BuiltInSkillDraftIntent;
     message: string;
@@ -3503,6 +3504,7 @@ function CCAgentSessionContent({
       message: string,
       files?: AttachedFile[],
       options?: {
+        hudScreenSubmission?: HudScreenSubmission;
         allowDesktopDispatch?: boolean;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
         piRuntimeRetryDelaysMs?: readonly number[];
@@ -3588,6 +3590,7 @@ function CCAgentSessionContent({
       // Desktop commands stay `^/` only. A whitespace-prefixed `/help` is not a dispatch.
       if (!slashMatch) return { handled: false, accepted: false, message };
       if (!allowDesktopDispatch) return { handled: false, accepted: false, message };
+      options?.hudScreenSubmission?.assertCurrent();
       // Await child creation in the composer's send transaction. The UI push
       // cannot acknowledge success or carry this invocation's attachments.
       if (hit.name === 'side') {
@@ -3595,10 +3598,11 @@ function CCAgentSessionContent({
           toast.info(t('chat.sideChat.mainTaskOnly'));
           return { handled: true, accepted: false, message };
         }
-        const accepted = await openSideChatTab(sessionId, {
+        const accepted = await dispatchHudScreenSubmission(options?.hudScreenSubmission, () => openSideChatTab(sessionId, {
           prompt: args,
           attachments: files,
-        });
+          assertSubmissionCurrent: options?.hudScreenSubmission?.assertCurrent,
+        }));
         return { handled: true, accepted, message };
       }
       // Review is handed to Main immediately with this invocation's serialized
@@ -3625,6 +3629,7 @@ function CCAgentSessionContent({
             ...(attachments?.length ? { attachments } : {}),
           };
           await startReviewOnDevice(request, rightSidebarDeviceLinkDeviceId);
+          options?.hudScreenSubmission?.accept();
           return { handled: true, accepted: true, message };
         } catch (err) {
           const ipcError = extractIpcError(err);
@@ -3655,6 +3660,7 @@ function CCAgentSessionContent({
         ...(remoteDeviceId ? { deviceId: remoteDeviceId } : {}),
         ...(session?.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
       });
+      options?.hudScreenSubmission?.accept();
       return { handled: true, accepted: true, message };
     },
     [
@@ -3751,12 +3757,14 @@ function CCAgentSessionContent({
       pendingSendRef.current = null;
       void (async () => {
         try {
+          pending.hudScreenSubmission?.assertCurrent();
           const slashDispatch = pending.literalText
             ? { handled: false, accepted: false, message: pending.message }
             : await maybeDispatchDesktopSlashCommand(
                 pending.message,
                 pending.files,
                 {
+                  hudScreenSubmission: pending.hudScreenSubmission,
                   allowDesktopDispatch: pending.deliveryMode !== 'steer',
                   piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
                   workingDirOverride: newDir,
@@ -3835,7 +3843,7 @@ function CCAgentSessionContent({
           const dispatch = pending.deliveryMode === 'steer' ? steerMessage : sendMessage;
           const followStartGeneration = readSendFollowCancelGeneration(sessionId);
           requestFollowLatest(sessionId, followStartGeneration);
-          const accepted = await dispatch(
+          const accepted = await dispatchHudScreenSubmission(pending.hudScreenSubmission, () => dispatch(
             slashDispatch.message,
             pending.model,
             pending.effort,
@@ -3843,7 +3851,8 @@ function CCAgentSessionContent({
             newDir,
             pending.files,
             pending.mentions,
-            pending.quotesEncoded ||
+            pending.hudScreenSubmission ||
+              pending.quotesEncoded ||
               pending.vendorOptions !== undefined ||
               pendingAgentReferences?.length ||
               pendingPastedTextRanges?.length ||
@@ -3851,6 +3860,7 @@ function CCAgentSessionContent({
               pending.onRemoteOptimisticFailure !== undefined ||
               pending.onDeferredAccepted !== undefined
               ? {
+                  beforeEnqueue: hudScreenPreflight(pending.hudScreenSubmission),
                   ...(pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : {}),
                   ...(pending.quotesEncoded ? { quotesEncoded: true } : {}),
                   ...(pendingAgentReferences?.length
@@ -3870,7 +3880,7 @@ function CCAgentSessionContent({
                     : {}),
                 }
               : undefined,
-          );
+          ));
           pending.resolveSubmission?.(accepted);
           if (accepted) {
             pending.onDeferredAccepted?.();
@@ -3884,6 +3894,7 @@ function CCAgentSessionContent({
           }
         } catch (error) {
           pending.resolveSubmission?.(false);
+          if (error instanceof HudScreenRevokedError) toast.error(t('hud.captureFailed'));
           log.warn(
             'pending send after working directory selection failed:',
             error instanceof Error ? error.message : String(error),
@@ -3983,6 +3994,7 @@ function CCAgentSessionContent({
         deliveryMode?: MessageDeliveryMode;
         literalText?: boolean;
         independent?: boolean;
+        hudScreenSubmission?: HudScreenSubmission;
         beforeEnqueue?: () => Promise<boolean>;
         onInputCreated?: (clientId: string) => void;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
@@ -3996,6 +4008,7 @@ function CCAgentSessionContent({
       },
     ) => {
       if (readOnly) return false;
+      opts?.hudScreenSubmission?.assertCurrent();
       if (cindyMakeInputLocked) return false;
       invalidateHistoryRecoveryNavigation();
       const deliveryMode = opts?.deliveryMode ?? 'queue';
@@ -4075,10 +4088,12 @@ function CCAgentSessionContent({
         ? { handled: false, accepted: false, message }
         : deliveryMode === 'steer'
           ? await maybeDispatchDesktopSlashCommand(message, files, {
+              hudScreenSubmission: opts?.hudScreenSubmission,
               allowDesktopDispatch: false,
               piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
             })
           : await maybeDispatchDesktopSlashCommand(message, files, {
+              hudScreenSubmission: opts?.hudScreenSubmission,
               piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
             });
       if (slashDispatch.handled) {
@@ -4147,6 +4162,7 @@ function CCAgentSessionContent({
         if (!proceed) return false;
       }
 
+      opts?.hudScreenSubmission?.assertCurrent();
       if (opts?.beforeEnqueue && !(await opts.beforeEnqueue())) return false;
       // Popover open → prevent re-entry
       if (folderPickerOpen) return false;
@@ -4168,6 +4184,7 @@ function CCAgentSessionContent({
           ? new Promise<boolean>((resolve) => { resolveSubmission = resolve; })
           : false;
         pendingSendRef.current = {
+          hudScreenSubmission: opts?.hudScreenSubmission,
           deliveryMode,
           builtInSkillIntent: opts?.builtInSkillIntent,
           literalText: opts?.literalText,
@@ -4219,6 +4236,7 @@ function CCAgentSessionContent({
 
       if (opts?.builtInSkillIntent) {
         const finalDispatch = await maybeDispatchDesktopSlashCommand(message, files, {
+          hudScreenSubmission: opts?.hudScreenSubmission,
           builtInSkillIntent: opts.builtInSkillIntent,
         });
         if (finalDispatch.handled) return finalDispatch.accepted;
@@ -4248,16 +4266,17 @@ function CCAgentSessionContent({
       }
 
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
+      const sendWorkingDir = session.workingDir;
       let rebalanceClientId: string | undefined;
       // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
       const replyQuote = botChatIdentity && !opts?.independent ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
         ...(replyQuote ? { replyQuote } : {}),
-        beforeEnqueue: recordRebalance ? async () => {
+        beforeEnqueue: hudScreenPreflight(opts?.hudScreenSubmission, recordRebalance ? async () => {
           if (await opts?.beforeEnqueue?.() === false) return false;
           if (rebalanceClientId) await recordRebalance(rebalanceClientId);
           return true;
-        } : opts?.beforeEnqueue,
+        } : opts?.beforeEnqueue),
         onInputCreated: recordRebalance ? (clientId: string) => {
           rebalanceClientId = clientId;
           opts?.onInputCreated?.(clientId);
@@ -4281,16 +4300,16 @@ function CCAgentSessionContent({
       if (deliveryMode === 'steer') {
         const followStartGeneration = readSendFollowCancelGeneration(sessionId);
         if (sessionId) requestFollowLatest(sessionId, followStartGeneration);
-        const accepted = await steerMessage(
+        const accepted = await dispatchHudScreenSubmission(opts?.hudScreenSubmission, () => steerMessage(
           message,
           model,
           effort,
           permissionMode,
-          session.workingDir,
+          sendWorkingDir,
           files,
           mentions,
           sendOptions,
-        );
+        ));
         if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
         if (accepted && sessionId) {
           if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
@@ -4305,16 +4324,16 @@ function CCAgentSessionContent({
       }
       const followStartGeneration = readSendFollowCancelGeneration(sessionId);
       if (sessionId) requestFollowLatest(sessionId, followStartGeneration);
-      const accepted = await sendMessage(
+      const accepted = await dispatchHudScreenSubmission(opts?.hudScreenSubmission, () => sendMessage(
         message,
         model,
         effort,
         permissionMode,
-        session.workingDir,
+        sendWorkingDir,
         files,
         mentions,
         sendOptions,
-      );
+      ));
       if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
       if (accepted && sessionId) {
         if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
@@ -5632,6 +5651,9 @@ function CCAgentSessionContent({
           ) : (
             messageStreamWithQuickSend
           )}
+          {/* HUD's composer can move above the messages. Keep navigation anchored
+            to the message viewport so it cannot cover the path or input controls. */}
+          {hud.active && <TopRightChipStack />}
           {botChatIdentity && isBotOpeningPending({ invitationStage: botInvitationStage, historyLoaded, messageCount: messages.length }) ? (
             <BotOpeningPending name={botChatIdentity.name} bottomInset={overlayHeight} />
           ) : null}
@@ -6131,6 +6153,7 @@ function CCAgentSessionContent({
                   aria-hidden={voiceModeOpen && voiceModeAvailable ? true : undefined}
                 >
                 <ChatInput
+                  hudQuota={spendIndicator}
                   topSlot={cindyMakeRecoveryId && session ? (
                     <CindyMakeEditingActions
                       key={`${session.id}:${cindyMakeRecoveryId}`}
@@ -6318,7 +6341,7 @@ function CCAgentSessionContent({
                     !session?.workingDir && !worktreeCreation && 'invisible',
                   )}
                 >
-                  <HudFooterDetails active={hud.active} summary={spendIndicator}>
+                  {!hud.active && <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
                   {/* Left: workingDir — 点击在系统文件管理器中打开;
                   click 区域宽度与文本一致(不拉伸到整行) */}
                   {worktreeCreation?.status === 'creating' ? (
@@ -6428,7 +6451,7 @@ function CCAgentSessionContent({
                     )}
 
                   </div>
-                  </HudFooterDetails>
+                  </div>}
                   {contextCapacityIndicator}
                 </div>
               ) : null}
@@ -6441,14 +6464,14 @@ function CCAgentSessionContent({
           在本栈第一行保留等尺寸占位，面板展开后也不遮住消息跳转等 portal chip。
           MessageStream 内部的 PrevMessageJumpChip 通过 portal 挂入同一栈,自然落到下一行。
           "本次会话改动文件列表"已迁移到 RSB review tab,不再保留浮动按钮 + 滑入抽屉。 */}
-        <TopRightChipStack>
+        {!hud.active && <TopRightChipStack>
           {!isMac &&
             (ownsRoute || showRsbToggle) &&
             (rightSidebarCollapsed ||
               (rightSidebarDeviceLinkDeviceId &&
                 !isSharedTaskPeer(rightSidebarDeviceLinkDeviceId))) &&
             rightSidebarSide === 'right' && <div aria-hidden className="h-7 w-7 shrink-0" />}
-        </TopRightChipStack>
+        </TopRightChipStack>}
       </section>
     </>
   );

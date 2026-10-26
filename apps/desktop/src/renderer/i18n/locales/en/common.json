@@ -17521,7 +17521,7 @@
     "captureFailed": "Could not capture the screen. Your message was not sent.",
     "fullscreen": "Leave macOS full screen before entering HUD.",
     "failed": "Could not complete the HUD action.",
-    "details": "Remaining 7-Day Quota",
+    "weeklyUnavailable": "7-day quota unavailable",
     "copyPath": "Copy Full Path",
     "pathCopied": "Path copied",
     "settingsAction": "HUD Settings"

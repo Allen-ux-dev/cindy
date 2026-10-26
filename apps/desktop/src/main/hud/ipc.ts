@@ -165,10 +165,11 @@ const controller = createHudController({
     wasVisible = false;
     captureWindow = null;
   },
-  async capture() {
+  async capture(assertCurrent) {
     // Let WindowServer commit hide before one-shot capture; never poll or record.
     await new Promise((resolve) => setTimeout(resolve, 180));
-    if (!readSettings().allowScreen) throw new Error('HUD_SCREEN_DISABLED');
+    // Cancel stale requests before touching OS pixels, including off/on pairs.
+    assertCurrent();
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: 1920, height: 1200 },

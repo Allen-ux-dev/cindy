@@ -17461,7 +17461,7 @@
     "captureFailed": "画面を取得できませんでした。メッセージは未送信です。",
     "fullscreen": "macOS のフルスクリーンを終了してください。",
     "failed": "HUD の操作に失敗しました。",
-    "details": "7 日間の残りクォータ",
+    "weeklyUnavailable": "7 日間のクォータ情報なし",
     "copyPath": "完全なパスをコピー",
     "pathCopied": "パスをコピーしました",
     "settingsAction": "HUD 設定"

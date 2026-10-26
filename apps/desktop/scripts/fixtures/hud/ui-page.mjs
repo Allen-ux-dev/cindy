@@ -10,6 +10,7 @@ export default {
     entry: { about: 'Normal titlebar HUD entry and hover' },
     settings: { about: 'HUD settings' },
     chrome: { about: 'Localized screen controls, settings overlay and custom shortcut' },
+    'chrome-no-quota': { about: 'Localized unavailable weekly quota beside screen control and truncated path' },
     'nested-panes': { about: 'Retain docked pane DOM while giving all space to chat' },
   },
   async check(page, ui) {
@@ -22,10 +23,44 @@ export default {
         throw new Error('HUD hover must show the titlebar hover background');
       await ui.capture('hover');
     }
-    if (ui.case === 'chrome') {
+    if (ui.case.startsWith('chrome')) {
       await page
         .getByRole('checkbox', { name: await ui.t('hud.thisScreen'), exact: true })
         .waitFor();
+      const controls = page.locator('.hud-screen-control');
+      const quota = page.locator('.hud-weekly-quota');
+      const path = page.locator('.hud-path-chip');
+      const [screenBox, quotaBox, pathBox] = await Promise.all([
+        controls.boundingBox(), quota.boundingBox(), path.boundingBox(),
+      ]);
+      const viewportWidth = await page.evaluate(() => window.innerWidth);
+      if (!screenBox || !quotaBox || !pathBox || pathBox.width < 24 ||
+          screenBox.x + screenBox.width > quotaBox.x + 1 ||
+          quotaBox.x + quotaBox.width > pathBox.x + 1 ||
+          pathBox.x + pathBox.width > viewportWidth)
+        throw new Error('Screen control, weekly quota and path must fit in order without overlap');
+      // Compare rendered text rather than container centers: an inline child can
+      // inherit a larger anonymous line box and drift even inside a centered row.
+      const textTops = await page.locator('.hud-composer-meta-row').evaluate((row) => {
+        return ['.hud-screen-control', '.hud-weekly-quota', '.hud-path-chip'].map((selector) => {
+          const walker = document.createTreeWalker(row.querySelector(selector), NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            if (!node.textContent.trim()) continue;
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            return range.getBoundingClientRect().top;
+          }
+          throw new Error(`Missing metadata text: ${selector}`);
+        });
+      });
+      if (Math.max(...textTops) - Math.min(...textTops) > 0.5)
+        throw new Error(`HUD metadata text must align vertically: ${textTops.join(', ')}`);
+      const quotaText = await quota.innerText();
+      if (ui.case === 'chrome-no-quota'
+          ? quotaText !== await ui.t('hud.weeklyUnavailable')
+          : !quotaText.includes('61%'))
+        throw new Error('Inline weekly quota must be localized');
       const pointer = page.getByRole('button', {
         name: await ui.t('hud.passThrough'),
         exact: true,
