@@ -338,6 +338,15 @@ export function registerHudIpc() {
         throw new Error('HUD_INACTIVE');
       controller.setActive(active);
     } catch (error) {
+      // A failed entry owns no fullscreen restoration. Do not clear the state
+      // of a replacement window or an already active HUD.
+      if (
+        originalGeneration === windowGeneration &&
+        hudWindow === originalWindow &&
+        !controller.snapshot().active
+      ) {
+        restoreFullscreen = false;
+      }
       throwIpcError('INVALID_ARGUMENT', error instanceof Error ? error.message : 'HUD_FAILED');
     }
     return state();

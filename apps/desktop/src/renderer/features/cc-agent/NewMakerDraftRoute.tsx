@@ -3682,6 +3682,8 @@ export function NewMakerDraftRoute() {
       let optimisticTitleSessionId: string | null = null;
       let remoteOptimisticTitleSessionId: string | null = null;
       let markedStartingSessionId: string | null = null;
+      let createdHudSessionId: string | null = null;
+      let hudRehomedFiles: AttachedFile[] | undefined;
       const autoTitleLabels = {
         image: t('ccAgent.autoTitle.image'),
         file: t('ccAgent.autoTitle.file'),
@@ -4256,6 +4258,7 @@ export function NewMakerDraftRoute() {
               toastCreateSessionFailed();
               return;
             }
+            if (opts?.hudScreenSubmission && !isCurrentDataOwner()) return;
             // 草稿里选中的那条收藏跟着会话走(见 carryDraftFavoriteAnchorToSession)。
             carryDraftFavoriteAnchorToSession(newSession.id, persistedAgentKind, model, providerId);
             // 计划模式是一次性选择:随本次发送被消耗,草稿勾选同步熄灭,
@@ -4293,8 +4296,20 @@ export function NewMakerDraftRoute() {
             const preNavDraft = getComposerDraft(NEW_MAKER_DRAFT_KEY);
             const preNavDraftDoc = opts?.recoveryDraftDoc ?? preNavDraft?.text ?? null;
             const preNavBrowserComments = preNavDraft?.browserComments ?? [];
-            opts?.hudScreenSubmission?.assertCurrent();
-            opts?.hudScreenSubmission?.accept();
+            let hudCancelledBeforeWorktree = false;
+            try {
+              opts?.hudScreenSubmission?.assertCurrent();
+            } catch (error) {
+              if (!(error instanceof HudScreenRevokedError)) throw error;
+              hudCancelledBeforeWorktree = true;
+              toast.error(t('hud.captureFailed'));
+            }
+            // Keep the selected worktree even when capture consent was revoked
+            // during task creation; prepare it without dispatching the message.
+            const worktreeFiles = hudCancelledBeforeWorktree
+              ? [...(preNavDraft?.attachments ?? attachmentState.attachments ?? []), ...preNavBrowserComments.map((comment) => comment.screenshot)]
+              : files;
+            if (!hudCancelledBeforeWorktree) opts?.hudScreenSubmission?.accept();
             navigate(`/cc-agent/${newSession.id}`, { replace: true });
             // clearDraftAndNotify (not bare clear): onSend returned false above
             // so ChatInput never cleared its editor — without notifying it, the
@@ -4309,9 +4324,16 @@ export function NewMakerDraftRoute() {
               // composer 重试发送就会把 `xdt-image://__new_maker_draft__/` 持久化进
               // 真实会话消息(删会话清不到)。初始值取原 files:rehome 自身抛错时
               // 走 catch 恢复原附件,行为与迁移前一致(fail-soft)。
-              let rehomedFiles = files;
+              let rehomedFiles = worktreeFiles;
               let rehomedComments = preNavBrowserComments;
+              const canContinueHudRecovery = () => {
+                if (!hudCancelledBeforeWorktree || isCurrentDataOwner()) return true;
+                worktreeCreationStore.clear(newSession.id);
+                clearSessionStarting(newSession.id);
+                return false;
+              };
               const restoreFirstMessageDraft = () => {
+                if (!canContinueHudRecovery()) return;
                 saveComposerDraft(newSession.id, {
                   text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : message),
                   ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
@@ -4327,7 +4349,8 @@ export function NewMakerDraftRoute() {
                 clearSessionStarting(newSession.id);
               };
               try {
-                rehomedFiles = await rehomeDraftAttachments(files, newSession.id);
+                rehomedFiles = await rehomeDraftAttachments(worktreeFiles, newSession.id);
+                if (!canContinueHudRecovery()) return;
                 rehomedComments = rewriteBrowserCommentsFromRehomedFiles(
                   preNavBrowserComments,
                   rehomedFiles,
@@ -4338,6 +4361,7 @@ export function NewMakerDraftRoute() {
                   name,
                   sourceBranch: wt.sourceBranch.trim() || 'HEAD',
                 });
+                if (!canContinueHudRecovery()) return;
                 if (!resp.ok) {
                   worktreeCreationStore.set(newSession.id, {
                     status: 'failed',
@@ -4360,6 +4384,7 @@ export function NewMakerDraftRoute() {
                   log.warn('[draft worktree send] get latest session failed', err);
                   return null;
                 });
+                if (!canContinueHudRecovery()) return;
                 if (latestSession?.status !== 'active') {
                   worktreeCreationStore.set(newSession.id, {
                     status: 'failed',
@@ -4371,6 +4396,7 @@ export function NewMakerDraftRoute() {
                 }
                 try {
                   await sessionService.update(newSession.id, { workingDir: newDir });
+                  if (!canContinueHudRecovery()) return;
                   sessionsStore.patchLocal(newSession.id, { workingDir: newDir });
                 } catch (err) {
                   log.error('[draft worktree send] update session workingDir failed', err);
@@ -4383,6 +4409,11 @@ export function NewMakerDraftRoute() {
                   return;
                 }
                 await refreshWorktreeForSession(newSession.id);
+                if (hudCancelledBeforeWorktree) {
+                  restoreFirstMessageDraft();
+                  worktreeCreationStore.clear(newSession.id);
+                  return;
+                }
                 // 注意:成功后不立刻 clear worktreeCreationStore —— 移到 sendMessage
                 // 触发之后再 clear, 让 CCAgentSessionView 里 worktreePreparing 一直
                 // true 到 sendMessage 已经 push 第一条 user message + isStreaming=true
@@ -4495,6 +4526,7 @@ export function NewMakerDraftRoute() {
                 // 渐渐让位给已经在串的 chat view)。
                 worktreeCreationStore.clear(newSession.id);
               } catch (err) {
+                if (!canContinueHudRecovery()) return;
                 log.error('[draft worktree send]', err);
                 worktreeCreationStore.set(newSession.id, {
                   status: 'failed',
@@ -4533,6 +4565,8 @@ export function NewMakerDraftRoute() {
             toastCreateSessionFailed();
             return;
           }
+          if (opts?.hudScreenSubmission && !isCurrentDataOwner()) return;
+          if (opts?.hudScreenSubmission) createdHudSessionId = newSession.id;
           // 草稿里选中的那条收藏跟着会话走(见 carryDraftFavoriteAnchorToSession)。
           carryDraftFavoriteAnchorToSession(newSession.id, persistedAgentKind, model, providerId);
           // 计划模式是一次性选择:随本次发送被消耗,草稿勾选同步熄灭。
@@ -4596,6 +4630,7 @@ export function NewMakerDraftRoute() {
           // 草稿态 base64 图片回填到新 session 的 image cache,换成 xdt-image://
           // URL。必须在发出首条之前,否则消息里还是草稿命名空间。
           const rehydratedFiles = await rehomeDraftAttachments(files, newSession.id);
+          if (opts?.hudScreenSubmission) hudRehomedFiles = rehydratedFiles;
           opts?.hudScreenSubmission?.assertCurrent();
           const sendWorkingDir = workingDir ?? newSession.workingDir;
           const preNavDraft = getComposerDraft(NEW_MAKER_DRAFT_KEY);
@@ -4765,6 +4800,38 @@ export function NewMakerDraftRoute() {
               ? t('ccAgent.draft.remoteWorktreeCleanupPending')
               : (getRemoteWorkingDirErrorMessage(err, t) ?? t('ccAgent.draft.createSessionFailed')),
           );
+          if (err instanceof HudScreenRevokedError && createdHudSessionId && isCurrentDataOwner()) {
+            // Creation/promotion consumed the homepage's task ID. Continue in that
+            // task instead of trying to create the same row on the next send.
+            // Read the editor draft, not `files`: only the latter contains the
+            // automatically captured (now revoked) screenshot.
+            const draft = getComposerDraft(NEW_MAKER_DRAFT_KEY);
+            const migrated = new Map((hudRehomedFiles ?? []).map((file) => [file.id, file]));
+            let recoveryFiles = [
+              ...(draft?.attachments ?? attachmentState.attachments ?? []),
+              ...(draft?.browserComments ?? []).map((comment) => comment.screenshot),
+            ].map((file) => migrated.get(file.id) ?? file);
+            try {
+              recoveryFiles = await rehomeDraftAttachments(recoveryFiles, createdHudSessionId) ?? [];
+            } catch (recoveryError) {
+              // Match ordinary failed-send recovery: keep user attachments even
+              // if their cache could not be copied. Never restore the HUD image.
+              log.warn('[draft send] HUD recovery attachment cache failed', recoveryError);
+            }
+            if (!isCurrentDataOwner()) return;
+            const browserComments = rewriteBrowserCommentsFromRehomedFiles(draft?.browserComments, recoveryFiles);
+            saveComposerDraft(createdHudSessionId, {
+              ...draft,
+              text: draft?.text ?? opts?.recoveryDraftDoc ?? plainTextToTiptapDoc(message),
+              attachments: excludeCommentScreenshots(recoveryFiles, browserComments),
+              browserComments,
+            });
+            worktreeCreationStore.clear(createdHudSessionId);
+            clearComposerDraftAndNotify(NEW_MAKER_DRAFT_KEY);
+            attachmentState.clearFiles();
+            resetDraftWorkspaceAfterSend();
+            navigate(`/cc-agent/${createdHudSessionId}`, { replace: true, flushSync: true });
+          }
         } finally {
           setWtCreating(false);
           markSendInFlight(false);

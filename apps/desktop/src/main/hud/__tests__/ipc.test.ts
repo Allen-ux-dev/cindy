@@ -299,6 +299,30 @@ describe('HUD native IPC lifecycle', () => {
     await env.handlers.get('hud:active')!(event, false);
     expect(fullscreen).toBe(true);
   });
+  // PR #7336: a timed-out native transition must not leak restoration state
+  // into a later HUD visit. Real IPC entry, fake OS event/timer (unit).
+  it('does not restore stale fullscreen after a timed-out entry and retry', async () => {
+    const win = windowMock();
+    let fullscreen = true;
+    win.isFullScreen = () => fullscreen;
+    const nativeWin = Object.assign(win, {
+      once: (name: string, fn: () => void) => win.events.set(name, fn),
+      removeListener: (name: string) => win.events.delete(name),
+      setFullScreen: vi.fn((value: boolean) => { fullscreen = value; }),
+    });
+    attachHudWindow(nativeWin as unknown as BrowserWindow);
+    const event = { sender: win.webContents };
+    const result = Promise.resolve(env.handlers.get('hud:active')!(event, true))
+      .catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await result).toBe('HUD_FULLSCREEN');
+    expect(win.events.has('leave-full-screen')).toBe(false);
+    await env.handlers.get('hud:active')!(event, true);
+    await env.handlers.get('hud:active')!(event, false);
+    expect(fullscreen).toBe(false);
+    expect(nativeWin.setFullScreen).not.toHaveBeenCalledWith(true);
+    expect(env.shortcuts.size).toBe(0);
+  });
   it('cancels pending fullscreen entry when the macOS window is closed', async () => {
     const win = windowMock();
     let fullscreen = true;

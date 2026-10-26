@@ -1,3 +1,5 @@
+import type { AttachedFile } from '@/lib/fileTypes';
+import type { ComposerDraft } from '@/lib/composerDraftStore';
 import { dispatchHudScreenSubmission, hudScreenPreflight, HudScreenRevokedError, type HudScreenSubmission } from '../../hud/screenSubmission';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -51,6 +53,12 @@ function executable(name: string) {
   }).outputText;
 }
 
+// Run the route's real attachment recovery helpers, not empty-array stubs.
+const recoveryHelpersCode = ts.transpileModule(source.statements.filter((node) =>
+  ts.isFunctionDeclaration(node) && ['rehomeDraftAttachments', 'rewriteBrowserCommentsFromRehomedFiles', 'excludeCommentScreenshots'].includes(node.name?.text ?? '')
+).map(node => node.getText(source)).join('\n') + '\n;({ rehomeDraftAttachments, rewriteBrowserCommentsFromRehomedFiles, excludeCommentScreenshots })', {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
 const modelId = 'qwen3:8b';
 const providerId = 'custom:cindy-local-ollama';
 const goalLimits = { maxTurns: 3, budgetTokens: null, noProgressLimit: null };
@@ -70,6 +78,11 @@ async function submit(options: {
   entry?: 'send' | 'goal';
   hudScreenSubmission?: HudScreenSubmission;
   afterAuth?: () => void;
+  afterCreate?: () => void;
+  afterWorktree?: () => void;
+  isCurrentOwner?: () => boolean;
+  recoveryDraft?: ComposerDraft;
+  submittedFiles?: AttachedFile[];
   afterRehome?: () => void;
   duringEnqueue?: () => void;
   effort?: Effort;
@@ -143,17 +156,24 @@ async function submit(options: {
     worktreeSkills = options.worktreeSkillsAfterCollab;
     return { workerSessionId: 'worker' };
   });
+  const removedDraftImages = new Set<string>();
   vi.stubGlobal('window', { electronAPI: {
+    cacheMediaForSession: vi.fn(async ({ url, sessionId }: { url: string; sessionId: string }) => {
+      if (removedDraftImages.has(url)) throw new Error('draft image was already cleaned');
+      return { url: url.replace('xdt-image://fixture/', `xdt-image://${sessionId}/`) };
+    }),
+    cleanupCachedImages: vi.fn(async (urls: string[]) => { urls.forEach(url => removedDraftImages.add(url)); }),
     deviceLink: { invoke: invokeRemote },
-    worktreeCreate: vi.fn(async () => ({ ok: true, meta: { path: worktreePath, branch: 'cindy/creator' } })),
+    worktreeCreate: vi.fn(async () => { options.afterWorktree?.(); return { ok: true, meta: { path: worktreePath, branch: 'cindy/creator' } }; }),
     localDb: { sessions: { create: ipcCreate } }, maker: {
     enableOrca,
     setGoal, listAgentSkills,
     listDesktopCommands: async () => ({ success: true, commands: [] }),
     listAgentCommands: async () => ({ success: true, commands: [] }),
   } } });
+  const recoveryHelpers = runInNewContext(recoveryHelpersCode, { window, DRAFT_IMAGE_URL_PREFIX: 'xdt-image://fixture/', log: { warn: () => {} } });
   const createSession = vi.fn(async (body) => {
-    try { return await createSessionViaIpc(body); }
+    try { const session = await createSessionViaIpc(body); options.afterCreate?.(); return session; }
     catch (error) { errors.push(error); return null; }
   });
   const sendMessage = vi.fn(async (_id, _text, model, effort, _permission, _dir, _files, _mentions, sendOpts) => {
@@ -164,6 +184,7 @@ async function submit(options: {
   });
   let done!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
+  let worktreeStarted = false;
   let finishWorktree!: () => void;
   const worktreeFinished = new Promise<void>(resolve => { finishWorktree = resolve; });
   const noop = () => {};
@@ -195,7 +216,7 @@ async function submit(options: {
     wtPreferenceSavingRef: { current: false }, wtPreferenceAuthorityUnknownRef: { current: false },
     wtBranchPreferenceSavingRef: { current: false },
     getDataOwnerGeneration: () => ({ dataOwnerId: 'fixture' }), dataOwnerId: 'fixture',
-    isDataOwnerGenerationCurrent: () => true,
+    isDataOwnerGenerationCurrent: () => options.isCurrentOwner?.() ?? true,
     markSendInFlight: (value: boolean) => { if (!value) done(); },
     t: (key: string) => key, authVendor: agentKind,
     vendorAuthGate: { checkAndConfirm: async () => { options.afterAuth?.(); return { proceed: true }; } },
@@ -203,12 +224,13 @@ async function submit(options: {
     createSession, toastCreateSessionFailed: noop, carryDraftFavoriteAnchorToSession: noop,
     makerChatStore: { setSessionRuntime: noop, sendMessage, autoNameSession: noop }, sessionsStore: { patchLocal: noop },
     markSessionStarting: noop, clearSessionStarting: noop,
-    rehomeDraftAttachments: async () => { options.afterRehome?.(); return []; }, getComposerDraft: () => options.builtInSkillIntent
-      ? { builtInSkillIntent: options.builtInSkillIntent } : null,
-    NEW_MAKER_DRAFT_KEY: 'fixture', rewriteBrowserCommentsFromRehomedFiles: () => [],
+    ...recoveryHelpers,
+    rehomeDraftAttachments: async (files: AttachedFile[] = [], sessionId: string) => { const result = await recoveryHelpers.rehomeDraftAttachments(files, sessionId); options.afterRehome?.(); return result; }, getComposerDraft: () => options.recoveryDraft ?? (options.builtInSkillIntent
+      ? { builtInSkillIntent: options.builtInSkillIntent } : null),
+    NEW_MAKER_DRAFT_KEY: 'fixture',
     leadingSlashInvocation, rebaseInlineRangesAfterSlashCommandRewrite, rewriteBuiltInSkillDraftForSend, setPending,
     rewritePiSkillMessageForSend: async ({ message }: { message: string }) => message,
-    clearComposerDraftAndNotify: noop, attachmentState: { clearFiles: noop },
+    clearComposerDraftAndNotify: vi.fn(), attachmentState: { clearFiles: vi.fn() },
     resetDraftWorkspaceAfterSend: noop, navigate: vi.fn(), setWtCreating: noop,
     makeDraftSessionId: () => 'remote-created', resolveDeviceLinkSubmission, parseRemoteWorktreeCreateResult,
     recoverPendingRemotePrecreatedWorktrees: vi.fn(async () => ({ storageReadable: true, retained: 0 })),
@@ -218,10 +240,11 @@ async function submit(options: {
     }) => (await invoke('maker:create-session', [createArgs])).sessionId,
     commitRemoteSessionHandoff: () => {}, rememberRecoverableHandoff: () => {},
     getBranchName: (name: string) => `cindy/${name}`,
-    sessionService: { touchUserSend: async () => {}, get: async () => ({ status: 'active' }), update: async () => {} },
+    sessionService: { touchUserSend: async () => {}, get: async () => ({ status: 'active' }), update: vi.fn(async () => {}) },
     crossAgentConvertService: { detect: async () => ({ items: [] }) },
     refreshWorktreeForSession: async () => {},
     worktreeCreationStore: { clear: finishWorktree, set: (_id: string, state: { status: string }) => {
+      if (state.status === 'creating') worktreeStarted = true;
       if (state.status === 'failed') finishWorktree();
     } },
     saveComposerDraft: vi.fn(),
@@ -234,7 +257,7 @@ async function submit(options: {
     emitAutoTitlePreviewCleared: noop, restoreRemoteOptimisticDraft: noop,
     normalizeAutoTitle: () => null,
     isLocalGoalWorktreeCleanupPendingError: () => false,
-    plainTextToTiptapDoc, excludeCommentScreenshots: () => [],
+    plainTextToTiptapDoc,
     log: { warn: (...args: unknown[]) => errors.push(args), error: (...args: unknown[]) => errors.push(args) },
     toast: { error: toastError, warning: noop },
   };
@@ -253,10 +276,10 @@ async function submit(options: {
       catch (error) { errors.push(error); }
     } else {
       await callback(options.message ?? 'hello', selectedModel, options.submittedEffort ?? selection.effort ?? '',
-        'default', [], [], { hudScreenSubmission: options.hudScreenSubmission, providerId: selectedProviderId, slashCommandRanges: options.slashCommandRanges });
+        'default', options.submittedFiles ?? [], [], { hudScreenSubmission: options.hudScreenSubmission, providerId: selectedProviderId, slashCommandRanges: options.slashCommandRanges });
     }
     await finished;
-    if (hasWorktree && createSession.mock.calls.length) await worktreeFinished;
+    if (hasWorktree && worktreeStarted) await worktreeFinished;
     return { createSession, ipcCreate, sendMessage, setGoal, errors, environment, setPending, toastError, listAgentSkills, invokeRemote, enableOrca };
   } finally { vi.unstubAllGlobals(); }
 }
@@ -550,22 +573,66 @@ describe.each(['send', 'goal'] as const)('%s draft model identity', entry => {
 
 // HUD revocation regression, unit: execute the real draft callback after auth,
 // cache and enqueue waits. Existing admission fixtures had no capture lease.
-it.each(['auth', 'rehome', 'enqueue'] as const)('does not hand off a draft screenshot revoked during %s', async phase => {
+it.each(['auth', 'create', 'worktree-create', 'rehome', 'enqueue'] as const)('does not hand off a draft screenshot revoked during %s', async phase => {
   let revoked = false;
   const capture = {
     assertCurrent: () => { if (revoked) throw new HudScreenRevokedError(); },
     accept: vi.fn(),
   };
   const revoke = () => { revoked = true; };
-  const result = await submit({ hudScreenSubmission: capture,
+  const attachment: AttachedFile = { id: 'user-image', url: 'xdt-image://fixture/user-image', name: 'user.png', path: '', ext: '.png', size: 1, category: 'image', mimeType: 'image/png' };
+  const screenshot: AttachedFile = { ...attachment, id: 'revoked-hud', url: 'xdt-image://fixture/revoked-hud', name: 'screen.png' };
+  const recoveryDraft = { text: plainTextToTiptapDoc('original unsent text'), attachments: [attachment] };
+  const result = await submit({ hudScreenSubmission: capture, recoveryDraft,
+    submittedFiles: [attachment, screenshot],
+    worktreeSkills: phase === 'worktree-create' ? [] : undefined,
+    afterCreate: phase === 'create' || phase === 'worktree-create' ? revoke : undefined,
     afterAuth: phase === 'auth' ? revoke : undefined,
     afterRehome: phase === 'rehome' ? revoke : undefined,
     duringEnqueue: phase === 'enqueue' ? revoke : undefined,
   });
   expect(capture.accept).not.toHaveBeenCalled();
   expect(result.setPending).not.toHaveBeenCalled();
-  expect(result.environment.navigate).not.toHaveBeenCalled();
+  if (phase === 'auth') {
+    expect(result.environment.navigate).not.toHaveBeenCalled();
+    expect(result.environment.saveComposerDraft).not.toHaveBeenCalled();
+  } else {
+    // PR #7336: previous coverage stopped at rejection, leaving the consumed
+    // draft ID on the homepage. Preserve the draft in the existing task to retry.
+    expect(result.createSession).toHaveBeenCalledTimes(1);
+    expect(result.environment.saveComposerDraft).toHaveBeenCalledWith('created',
+      expect.objectContaining({ text: recoveryDraft.text, attachments: [{ ...attachment, url: 'xdt-image://created/user-image' }] }));
+    expect(result.environment.clearComposerDraftAndNotify).toHaveBeenCalledWith('fixture');
+    expect(result.environment.navigate).toHaveBeenCalledWith('/cc-agent/created',
+      expect.objectContaining({ replace: true }));
+  }
+  if (phase === 'worktree-create') {
+    expect(result.environment.sessionService.update).toHaveBeenCalledWith('created', { workingDir: '/fixture/repo/.cindy-worktrees/creator' });
+    expect(result.sendMessage).not.toHaveBeenCalled();
+  }
   expect(result.toastError).toHaveBeenCalledWith('hud.captureFailed');
+});
+// HUD cancellation must not turn an account change into draft recovery in the
+// new account. Exercise creation and the background worktree completion boundary.
+it.each(['create', 'worktree'] as const)('does not restore a revoked HUD draft across an account change during %s', async phase => {
+  let ownerCurrent = true;
+  let revoked = false;
+  const result = await submit({
+    hudScreenSubmission: { assertCurrent: () => { if (revoked) throw new HudScreenRevokedError(); }, accept: vi.fn() },
+    recoveryDraft: { text: plainTextToTiptapDoc('private draft'), attachments: [] },
+    worktreeSkills: [],
+    isCurrentOwner: () => ownerCurrent,
+    afterCreate: () => { revoked = true; if (phase === 'create') ownerCurrent = false; },
+    afterWorktree: () => { ownerCurrent = false; },
+  });
+  expect(result.environment.saveComposerDraft).not.toHaveBeenCalled();
+  expect(result.environment.sessionService.update).not.toHaveBeenCalled();
+  expect(result.sendMessage).not.toHaveBeenCalled();
+  if (phase === 'create') {
+    expect(result.environment.navigate).not.toHaveBeenCalled();
+    expect(result.environment.clearComposerDraftAndNotify).not.toHaveBeenCalled();
+    expect(result.environment.attachmentState.clearFiles).not.toHaveBeenCalled();
+  }
 });
 it('accepts a screenshot before navigating away from the draft composer', async () => {
   let accepted = false;
