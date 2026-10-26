@@ -107,6 +107,7 @@ vi.mock('@/hooks/useAgentCapabilities', async (original) => ({ ...await original
 const noOp = () => {};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api: any = new Proxy({}, { get: (_obj, key) => {
+  if (key === 'hud') return undefined; // Normal composer fixture: HUD is not mounted.
   if (key === 'setModel') return h.setModel;
   if (key === 'uploadChatFolder') return h.uploadChatFolder;
   if (key === 'getFilePath') return () => '/controller/docs';

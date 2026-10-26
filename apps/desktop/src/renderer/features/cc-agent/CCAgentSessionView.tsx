@@ -1,3 +1,5 @@
+import { HudFooterDetails } from '@/features/hud/HudFooterDetails';
+import { useHud } from '@/features/hud/store';
 import { CompanionVoicePanel } from '../bots/voice/CompanionVoicePanel';
 import { visibleVoiceCallMessages } from '../bots/voice/VoiceCallTranscript';
 import { voiceTaskFailure } from '../bots/voice/VoiceReplyTracker';
@@ -854,6 +856,7 @@ function CCAgentSessionContent({
   onBotReadThrough,
 }: CCAgentSessionViewProps = {}) {
   const { t } = useTranslation();
+  const hud = useHud();
   const { sessionId: paramSessionId } = useParams<{ sessionId: string }>();
   const sessionId = sessionIdProp ?? paramSessionId;
   const navigate = useNavigate();
@@ -5306,7 +5309,7 @@ function CCAgentSessionContent({
       isLoadingMore={isLoadingMore}
       hasMoreMessages={hasMoreMessages}
       historyWindowHasIsland={historyWindowHasIsland}
-      bottomPadding={overlayHeight}
+      bottomPadding={hud.active ? 12 : overlayHeight}
       bottomCenterClearanceOffset={bottomCenterClearanceOffset}
       contentWidth={messageWidth}
       getContentWidth={getMessageWidth}
@@ -5326,6 +5329,7 @@ function CCAgentSessionContent({
   const quickSend = useMemo<SessionQuickSend>(() => ({
     send: async (text, options) => {
       if (!session) return false;
+
       return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode, undefined, undefined, { ...options, ...(options?.literalText ? { slashCommandRanges: [] } : {}) })) !== false;
     },
   }), [handleSend, session]);
@@ -5336,6 +5340,64 @@ function CCAgentSessionContent({
   const composerRuntimeVisible =
     !pendingPlanReview &&
     (agentStatus.isRunning || backgroundTasksActive || runningWorkflow !== null);
+
+  const spendIndicator = (
+<TodaySpendChip
+                      quotaOnly={hud.active}
+                      vendorKey={normalizeDbAgentKind(displayAgentKind)}
+                      modelId={agentSwitchIntent?.model ?? session?.model ?? null}
+                      providerId={usageChipProviderId}
+                      sessionId={sessionId}
+                      sessionInitialMoney={session?.totalMoney ?? null}
+                      sessionInitialCostUsd={session?.totalCostUsd ?? null}
+                      sessionInitialTokens={session?.totalTokenUsage ?? null}
+                      remoteHostId={session?.remoteHostId ?? null}
+                      deviceLinkDeviceId={remoteDeviceId ?? null}
+                      usageAccount={usageAccount}
+                    />
+  );
+
+  const contextCapacityIndicator = (
+    <ContextCapacityRing
+      variant={hud.active ? 'bar' : 'ring'}
+      isRunning={agentStatus.isRunning}
+      sessionId={sessionId}
+      providerId={session?.providerId}
+      contextTokens={agentStatus.contextTokens}
+      model={agentSwitchIntent?.model ?? session?.model ?? ''}
+      vendorKey={normalizeDbAgentKind(displayAgentKind)}
+      sdkContextWindow={agentStatus.contextWindow}
+      verifiedContextWindow={resolveSessionContextWindow(
+        { providers },
+        {
+          agentKind: normalizeDbAgentKind(displayAgentKind),
+          model: agentSwitchIntent?.model ?? session?.model,
+          providerId: agentSwitchIntent
+            ? agentSwitchIntent.providerId
+            : session?.providerId,
+        },
+      )}
+      deviceId={remoteDeviceId}
+      onCompact={
+        // 按 agent 能力分流(#1927/#1933 review):claude-code 走 inputCoordinator,
+        // 其余声明 manualCompact.supported(当前仅 pi)走 compact-session 通道;
+        // codex 无手动 compact(上游自动压缩)保持纯展示。pi 的 SSH 远程会话
+        // (remoteHostId)无 compact-session 路由 → 不开放(与 SessionContentHeader
+        // 压缩菜单仅本地/device-link 一致);device-link 远程 pi 走隧道,照常开放。
+        // pi 回合运行中会拒绝压缩 → compact-session 通道在 running 时禁用
+        // (与 SessionContentHeader 的 runningSessionIds 一致,codex P1);
+        // claude-input 保留旧行为(turn 中可走 inputCoordinator)。
+        !readOnly &&
+        compactChannel !== null &&
+        !(realAgentKind === 'pi' && !!session?.remoteHostId) &&
+        session != null &&
+        agentStatus.contextTokens > 0 &&
+        !(compactChannel === 'compact-session' && agentStatus.isRunning)
+          ? handleCompactRequest
+          : undefined
+      }
+    />
+  );
 
   const content = (
     // Layout: single scroll container (full height) + sticky input overlay at bottom.
@@ -5580,6 +5642,7 @@ function CCAgentSessionContent({
            rail 为 0。inputWidth = messageWidth + 20,每侧多 10px,正好填满 overlay。 */}
         <div
           ref={overlayRef}
+          data-hud-composer
           style={{ left: inputPad, right: inputPad }}
           className="pointer-events-none absolute bottom-0 flex flex-col items-center"
         >
@@ -5594,6 +5657,7 @@ function CCAgentSessionContent({
               展开态由「计划 + 完整被控提示」组成真实 flex 组合共同居中,被控提示会把计划
               向左挤且不会互相覆盖；折叠态计划恢复单独居中,呼吸灯移到 token 统计左侧。 */}
             <div
+              data-hud-runtime-row
               className="mx-auto grid grid-cols-1 grid-rows-1 items-center"
               style={{ width: inputWidth }}
             >
@@ -6248,11 +6312,13 @@ function CCAgentSessionContent({
                 chatinput 底部 显示 work dir 的地方"——不再在 chat stream 插 SystemCard。 */}
               {!botChatIdentity ? (
                 <div
+                  data-hud-footer
                   className={cn(
                     'mt-1.5 flex w-full items-center justify-between gap-3 px-1',
                     !session?.workingDir && !worktreeCreation && 'invisible',
                   )}
                 >
+                  <HudFooterDetails active={hud.active} summary={spendIndicator}>
                   {/* Left: workingDir — 点击在系统文件管理器中打开;
                   click 区域宽度与文本一致(不拉伸到整行) */}
                   {worktreeCreation?.status === 'creating' ? (
@@ -6340,18 +6406,7 @@ function CCAgentSessionContent({
                         />
                       </Tip>
                     )}
-                    <TodaySpendChip
-                      vendorKey={normalizeDbAgentKind(displayAgentKind)}
-                      modelId={agentSwitchIntent?.model ?? session?.model ?? null}
-                      providerId={usageChipProviderId}
-                      sessionId={sessionId}
-                      sessionInitialMoney={session?.totalMoney ?? null}
-                      sessionInitialCostUsd={session?.totalCostUsd ?? null}
-                      sessionInitialTokens={session?.totalTokenUsage ?? null}
-                      remoteHostId={session?.remoteHostId ?? null}
-                      deviceLinkDeviceId={remoteDeviceId ?? null}
-                      usageAccount={usageAccount}
-                    />
+                    {spendIndicator}
                     {/* device-link 远程任务的档位走 maker:set-context-window-budget 隧道命令，
                         在偏好文件落盘并应用到活实例；老被控端不支持时由 chip 提示版本不支持。
                         当前档位与可选档位一起来自权威边界查询（本地 main / 远程被控端）。 */}
@@ -6371,45 +6426,10 @@ function CCAgentSessionContent({
                         disabled={readOnly || !session}
                       />
                     )}
-                    <ContextCapacityRing
-                      isRunning={agentStatus.isRunning}
-                      sessionId={sessionId}
-                      providerId={session?.providerId}
-                      contextTokens={agentStatus.contextTokens}
-                      model={agentSwitchIntent?.model ?? session?.model ?? ''}
-                      vendorKey={normalizeDbAgentKind(displayAgentKind)}
-                      sdkContextWindow={agentStatus.contextWindow}
-                      verifiedContextWindow={resolveSessionContextWindow(
-                        { providers },
-                        {
-                          agentKind: normalizeDbAgentKind(displayAgentKind),
-                          model: agentSwitchIntent?.model ?? session?.model,
-                          providerId: agentSwitchIntent
-                            ? agentSwitchIntent.providerId
-                            : session?.providerId,
-                        },
-                      )}
-                      deviceId={remoteDeviceId}
-                      onCompact={
-                        // 按 agent 能力分流(#1927/#1933 review):claude-code 走 inputCoordinator,
-                        // 其余声明 manualCompact.supported(当前仅 pi)走 compact-session 通道;
-                        // codex 无手动 compact(上游自动压缩)保持纯展示。pi 的 SSH 远程会话
-                        // (remoteHostId)无 compact-session 路由 → 不开放(与 SessionContentHeader
-                        // 压缩菜单仅本地/device-link 一致);device-link 远程 pi 走隧道,照常开放。
-                        // pi 回合运行中会拒绝压缩 → compact-session 通道在 running 时禁用
-                        // (与 SessionContentHeader 的 runningSessionIds 一致,codex P1);
-                        // claude-input 保留旧行为(turn 中可走 inputCoordinator)。
-                        !readOnly &&
-                        compactChannel !== null &&
-                        !(realAgentKind === 'pi' && !!session?.remoteHostId) &&
-                        session != null &&
-                        agentStatus.contextTokens > 0 &&
-                        !(compactChannel === 'compact-session' && agentStatus.isRunning)
-                          ? handleCompactRequest
-                          : undefined
-                      }
-                    />
+
                   </div>
+                  </HudFooterDetails>
+                  {contextCapacityIndicator}
                 </div>
               ) : null}
             </div>
@@ -6985,6 +7005,7 @@ function getModelContextWindow(
 }
 
 function ContextCapacityRing({
+  variant = 'ring',
   isRunning,
   sessionId,
   providerId,
@@ -6996,6 +7017,7 @@ function ContextCapacityRing({
   deviceId,
   onCompact,
 }: {
+  variant?: 'ring' | 'bar';
   isRunning?: boolean;
   sessionId?: string;
   providerId?: string | null;
@@ -7054,7 +7076,9 @@ function ContextCapacityRing({
       ? `Context — ${formatTokenCount(usedTokens)} / ${formatTokenCount(contextWindow)} (${pct}%)`
       : 'No context data yet';
 
-  const ringContent = (
+  const ringContent = variant === 'bar' ? (
+    <span className="hud-context-track" aria-hidden="true"><span className="hud-context-fill" style={{ width: `${pct}%`, background: fillColor }} /></span>
+  ) : (
     <>
       <svg
         width={size}
@@ -7130,13 +7154,20 @@ function ContextCapacityRing({
           type="button"
           onClick={onCompact}
           aria-label={t('ccAgent.layout.contextRing.compactHint')}
-          className="flex shrink-0 cursor-pointer items-center gap-1 transition-opacity hover:opacity-75 active:opacity-60"
+          className={variant === 'bar' ? 'hud-context-bar' : 'flex shrink-0 cursor-pointer items-center gap-1 transition-opacity hover:opacity-75 active:opacity-60'}
         >
           {ringContent}
         </button>
       ) : (
         <div
-          className="flex shrink-0 items-center gap-1"
+          className={variant === 'bar' ? 'hud-context-bar' : 'flex shrink-0 items-center gap-1'}
+          tabIndex={variant === 'bar' ? 0 : undefined}
+          role={variant === 'bar' ? 'meter' : undefined}
+          aria-label={variant === 'bar' ? tooltipText : undefined}
+          aria-valuemin={variant === 'bar' ? 0 : undefined}
+          aria-valuemax={variant === 'bar' ? 100 : undefined}
+          aria-valuenow={variant === 'bar' ? pct : undefined}
+          onFocus={() => { if (vendorKey === 'codex') setContextInspection((n) => n + 1); }}
           onMouseEnter={() => {
             if (vendorKey === 'codex') setContextInspection((n) => n + 1);
           }}

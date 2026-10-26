@@ -252,3 +252,15 @@ describe('AppShortcutStore', () => {
     );
   });
 });
+
+it('persists the HUD shortcut in the shared registry, checks conflicts, and restores defaults', () => {
+  const store = makeStore('darwin');
+  expect(store.getEffectiveCombos('hud-toggle-pass-through')[0]).toMatchObject({ code: 'KeyH', meta: true, shift: true });
+  expect(store.setOverride('hud-toggle-pass-through', combo('KeyB', { meta: true }))).toBe('conflict');
+  expect(store.setOverride('hud-toggle-pass-through', combo('KeyJ', { meta: true, shift: true }))).toBeNull();
+  expect(makeStore().getEffectiveCombos('hud-toggle-pass-through')[0].code).toBe('KeyJ');
+  store.setOverride('hud-toggle-pass-through', null);
+  expect(store.getEffectiveCombos('hud-toggle-pass-through')).toEqual([]);
+  store.clearOverride('hud-toggle-pass-through');
+  expect(store.getEffectiveCombos('hud-toggle-pass-through')[0].code).toBe('KeyH');
+});

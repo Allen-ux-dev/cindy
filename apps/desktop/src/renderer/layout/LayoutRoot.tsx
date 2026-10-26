@@ -847,9 +847,11 @@ interface LayoutRootProps {
    * 统一开关(2026-07-08 Lizi 实测:设置页右缘冒出意识面板)。
    */
   suppressNonChatPanels?: boolean;
+  /** Temporary chat-only presentation keeps every pane mounted and never rewrites saved fractions. */
+  chatPresentationOnly?: boolean;
 }
 
-export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = {}): ReactNode {
+export function LayoutRoot({ suppressNonChatPanels = false, chatPresentationOnly = false }: LayoutRootProps = {}): ReactNode {
   // 幂等注册内置面板 —— 放组件体而非模块副作用:HMR / 测试 reset 后再渲染也能自愈。
   registerBuiltinPanels();
   // 已装意识的面板首帧前同步注册:与内置面板同帧就位;未装意识的存档残留
@@ -878,7 +880,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   // 让下一次分割线起拖从眼前宽度开始，不出现“空拖一段再跳大”。
   useEffect(() => {
     const root = layoutRootRef.current;
-    if (!root || suppressNonChatPanels) return;
+    if (!root || suppressNonChatPanels || chatPresentationOnly) return;
     let timer: number | null = null;
     const heal = () => {
       timer = null;
@@ -907,7 +909,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
       if (observer === null) window.removeEventListener('resize', schedule);
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [ghostSyncVersion, layout, suppressNonChatPanels]);
+  }, [ghostSyncVersion, layout, suppressNonChatPanels, chatPresentationOnly]);
 
   // 撑满态(panelMaximize.tsx):会话级视图态,树账本不动。同 kind 再点还原。
   const [maximizedKind, setMaximizedKind] = useState<string | null>(null);
@@ -961,7 +963,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
         <>
           {visible.map((entry) =>
             entry === maximizedEntry ? (
-              <div key={entry.node.id} className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+              <div key={entry.node.id} data-layout-root-child-id={entry.node.id} className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <NodeView
                   node={entry.node}
                   liveFractions={liveFractions}
@@ -971,7 +973,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
                 />
               </div>
             ) : (
-              <div key={entry.node.id} aria-hidden className="flex w-0 flex-none overflow-hidden">
+              <div key={entry.node.id} data-layout-root-child-id={entry.node.id} aria-hidden={!chatPresentationOnly || !containsChat(entry.node)} className="flex w-0 flex-none overflow-hidden">
                 <NodeView
                   node={entry.node}
                   atWindowLeft={false}

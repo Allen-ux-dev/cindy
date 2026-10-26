@@ -721,6 +721,28 @@ describe('TodaySpendChip Claude subscription popover', () => {
     expect(trigger.textContent).toContain('7天 剩余 66%');
   });
 
+  // HUD regression: the compact details must show weekly quota only, without
+  // task cost or another interactive popover. Existing tests cover the full chip.
+  it('HUD does not substitute a five-hour window when weekly quota is missing', () => {
+    mocks.codexAuthInjection = 'oauth-bearer';
+    mocks.codexSnapshot = { source: 'codex-app-server', limitId: 'codex', primary: { usedPercent: 12, windowMinutes: 300 } };
+    const { container } = render(<TodaySpendChip quotaOnly vendorKey="codex" providerId="openai" modelId="gpt-5.6-sol" sessionId="session-codex" />);
+    expect(container.textContent).not.toContain('88%');
+    expect(container.textContent).not.toContain('5h');
+    expect(container.textContent).not.toBe('');
+  });
+  it('HUD summary shows only the weekly remaining quota', () => {
+    mocks.codexAuthInjection = 'oauth-bearer';
+    mocks.codexSnapshot = {
+      source: 'codex-app-server', limitId: 'codex',
+      primary: { usedPercent: 12, windowMinutes: 300 },
+      secondary: { usedPercent: 34, windowMinutes: 10_080 },
+    };
+    const { container } = render(<TodaySpendChip quotaOnly vendorKey="codex" providerId="openai" modelId="gpt-5.6-sol" sessionId="session-codex" sessionInitialCostUsd={0.5} />);
+    expect(container.textContent).toBe('7天 剩余 66%');
+    expect(container.querySelector('button')).toBeNull();
+  });
+
   it('悬停约 300ms 后显示额度卡片', () => {
     renderClaudeSubscriptionChip();
     const trigger = screen.getByRole('button', { name: '打开 Claude 用量页面' });

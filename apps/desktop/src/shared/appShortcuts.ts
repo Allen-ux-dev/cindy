@@ -33,6 +33,7 @@ export interface AppShortcutCombo {
 export type AppShortcutScope = 'app' | 'workdir-doc' | 'browser' | 'composer';
 
 export const APP_SHORTCUT_IDS = [
+  'hud-toggle-pass-through',
   'toggle-sidebar',
   'open-settings',
   'new-maker',
@@ -109,6 +110,8 @@ export interface AppShortcutDefinition {
    * —— store 与设置页双端都按此校验拦截。
    */
   menuBacked?: boolean;
+  /** Native global registration requires an Electron accelerator. */
+  globalBacked?: boolean;
   /** 缺省 = 全平台可用。 */
   platforms?: ReadonlyArray<'darwin' | 'win32' | 'linux'>;
   /**
@@ -140,6 +143,16 @@ function modCombo(code: string, platform: string, extra: ComboModifiers = {}): A
 // 数组顺序即设置页展示顺序: 高频动作在前 (新对话 → 侧边栏 → 权限模式 →
 // 命令行 → 查找 → 缩放 → 浏览器)。hiddenInSettings 项不展示但仍正常生效。
 export const APP_SHORTCUT_DEFINITIONS: ReadonlyArray<AppShortcutDefinition> = [
+  {
+    id: 'hud-toggle-pass-through',
+    scope: 'app',
+    labelKey: 'settings.shortcuts.items.hud-toggle-pass-through.label',
+    descriptionKey: 'settings.shortcuts.items.hud-toggle-pass-through.description',
+    rebindable: true,
+    globalBacked: true,
+    platforms: ['darwin'],
+    getDefaultCombos: (platform) => [modCombo('KeyH', platform, { shift: true })],
+  },
   {
     id: 'new-maker',
     scope: 'app',

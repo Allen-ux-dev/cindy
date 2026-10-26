@@ -1,3 +1,4 @@
+import { useHudScreenAttachment } from '@/features/hud/useHudScreenAttachment';
 import {
   useCallback,
   useEffect,
@@ -1747,6 +1748,7 @@ export function ChatInput({
   const lastComposerSelectionFromRef = useRef<number | null>(null);
   const internalMentionDragActiveRef = useRef(false);
   const [workingDir, setWorkingDir] = useState<string | null>(initialWorkingDir ?? null);
+  const hudScreen = useHudScreenAttachment(sessionId, workingDir);
   const [internalFolderOpen, setInternalFolderOpen] = useState(false);
 
   // Ref bridge for Tiptap handlePaste(粘贴管线):editorProps 闭包只建一次,
@@ -5827,7 +5829,7 @@ export function ChatInput({
         // 评论截图并入发送附件(item.screenshot 即 AttachedFile,顺序在用户附件后,
         // 与评论块的编号 caption 对应)。
         const commentScreenshots = commentsForSend.map((c) => c.screenshot);
-        const filesToSend =
+        let filesToSend =
           attachmentsForSend.length > 0 || commentScreenshots.length > 0
             ? [...attachmentsForSend, ...commentScreenshots]
             : undefined;
@@ -6149,7 +6151,9 @@ export function ChatInput({
                 onRemoteOptimisticFailure,
               )
             : () => {};
+        let acceptHudScreen: (() => void) | undefined;
         const onDeferredAccepted = () => {
+          acceptHudScreen?.();
           if (optimisticallyClearRemoteComposer) {
             // 缺 workingDir 的第一次尝试会返回 false，并把远程 composer 恢复回来。
             // 补选目录后若真正受理，需要开启一轮新的失败恢复资格，再只清掉原草稿；
@@ -6220,6 +6224,14 @@ export function ChatInput({
         let result: boolean | void;
         let effortForSend = selectedEffort;
         try {
+          // Snapshot/optimistic clear precedes capture: remote typing during the
+          // native await belongs to the next draft. Existing failure restore
+          // preserves that newer draft and restores the source when safe.
+          const screenshot = await hudScreen.prepare(text);
+          if (screenshot) {
+            filesToSend = [...(filesToSend ?? []), screenshot.attachment];
+            acceptHudScreen = screenshot.accept;
+          }
           if (sessionId) {
             const coordinator = effortChangeCoordinatorRef.current;
             let runtimeSettled = false;
@@ -6258,6 +6270,14 @@ export function ChatInput({
             // 选择发送，保证本 turn 与 UI/SQLite 的 effort 相同。
             effortForSend = coordinator.getCommittedEffort(sessionId) ?? selectedEffort;
           }
+          // Effort synchronization may have yielded after capture preparation.
+          // Revalidate consent before handing pixels to the existing send pipeline.
+          try {
+            screenshot?.assertCurrent();
+          } catch (error) {
+            toast.error(t('hud.captureFailed'));
+            throw error;
+          }
           result = await onSend(
             routedText,
             activeModel,
@@ -6295,6 +6315,7 @@ export function ChatInput({
           restoreRemoteComposerAndRelease();
           return;
         }
+        acceptHudScreen?.();
         if (!sourceSessionId) clearSentComposer();
         releaseRemoteComposerTransition();
         markRecentPluginUsage();
@@ -6316,6 +6337,7 @@ export function ChatInput({
       folderTransfers.hasPending,
       sessionId,
       onSend,
+      hudScreen,
       activeModel,
       selectedEffort,
       activePermissionMode,
@@ -9188,6 +9210,7 @@ export function ChatInput({
 
   return (
     <div className="relative flex w-full flex-col items-center gap-4" data-chat-input-root>
+      {hudScreen.control}
       {makePreflight && makePreflight.sessionId === sessionId && (
         <CindyMakePreflightDialog
           {...makePreflight}
@@ -9237,6 +9260,7 @@ export function ChatInput({
       <div ref={paletteAnchorRef} className="relative w-full">
         <div
           ref={mergedCardRef}
+          data-hud-composer-surface
           className={cn(
             'flex w-full flex-col gap-0',
             showFusedWrapper && [

@@ -105,9 +105,8 @@ export class AppShortcutStore {
     // darwin 上菜单专属 id 的组合必须能表达为 Electron accelerator, 否则
     // 菜单无 accelerator 且没有任何按键 fallback —— 绑定形同虚设。
     if (
-      def.menuBacked &&
-      this.options.platform === 'darwin' &&
-      comboToElectronAccelerator(normalized, 'darwin') === null
+      (def.globalBacked || (def.menuBacked && this.options.platform === 'darwin')) &&
+      comboToElectronAccelerator(normalized, this.options.platform) === null
     ) {
       return 'menu-inexpressible';
     }

@@ -1,3 +1,4 @@
+import { getHudTransparency } from '../../../shared/hud';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
 import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
@@ -15,6 +16,8 @@ import { ContentHeaderSlot } from '@/components/layout/ContentHeader';
 import { rightSidebarOwnsRailChromeActions as resolveRightSidebarRailChromeActionsOwner } from '@/components/layout/railChromeActions';
 import { FadeSwitcher } from '@/components/layout/FadeSwitcher';
 import { RightSidebar, type RightSidebarHandle } from '@/components/layout/RightSidebar';
+import { HudChrome, HudEntry } from '@/features/hud/HudChrome';
+import { useHud } from '@/features/hud/store';
 import { RightSidebarToggle } from '@/components/layout/RightSidebarToggle';
 import { Sidebar } from '@/components/sidebar/Sidebar';
 import { getSplitSessionIds, useSplitGroup } from '@/features/cc-agent/splitGroupStore';
@@ -250,6 +253,7 @@ function SidebarPinSpacer({ width }: { width: number }) {
 }
 
 export function MainLayout() {
+  const hud = useHud();
   useRememberMainEntry();
   // 未处理报错的恢复与已处置收敛不依赖当前路由或侧栏是否挂载。
   usePendingAlertAttention();
@@ -1199,6 +1203,8 @@ export function MainLayout() {
       });
   }, []);
 
+  const hudEntryInRightSidebar = isMac && rightSidebarMounted && !isRightSidebarCollapsed && !rightSidebarForceCollapsed && (rightSidebarSide === 'right' || isRightSidebarMaximized);
+  const reserveHudEntry = isMac && !isSecondaryWindow() && location.pathname.startsWith('/cc-agent/') && !hud.active && !hudEntryInRightSidebar;
   // 边页签组(左 / 上 / 下)的宿主上下文:与右侧栏拿到的会话上下文同一份。
   const tabGroupHost = useMemo<TabGroupHostValue>(
     () => ({
@@ -1212,6 +1218,7 @@ export function MainLayout() {
       // 左栏完全收起 / rail 态时,窗口左上的红绿灯 / ChromeActions 会压到最左面板顶栏。
       sidebarCollapsed: isSidebarCollapsed,
       hasRailChromeActions,
+      reserveHudEntry,
     }),
     [
       handleDetachRightSidebarTab,
@@ -1221,6 +1228,7 @@ export function MainLayout() {
       rightSidebarSessionId,
       rightSidebarSubagentsAvailable,
       rightSidebarWorkdirInfo,
+      reserveHudEntry,
     ],
   );
 
@@ -1644,11 +1652,22 @@ export function MainLayout() {
       isCollapsed={sidebarPeek.isPeekVisible ? false : isSidebarCollapsed || isRailMode}
     >
       <ScheduleSessionIndexOwner />
+      {!isSecondaryWindow() && <HudChrome showEntry={!hudEntryInRightSidebar} />}
       {!isSecondaryWindow() && <AppBadgeAttentionSync />}
       <div
         ref={rowRef}
+        data-hud-position={hud.settings.inputPosition}
+        style={{
+          '--hud-background': `${100-getHudTransparency(hud.settings.backgroundTransparency, hud.active && hud.moving)}%`,
+          '--hud-composer': `${100-getHudTransparency(hud.settings.composerTransparency, hud.active && hud.moving)}%`,
+          '--hud-message': `${100-getHudTransparency(hud.settings.messageTransparency, hud.active && hud.moving)}%`,
+          '--hud-input': `${100-getHudTransparency(hud.settings.inputTransparency, hud.active && hud.moving)}%`,
+          '--hud-image-opacity': 1-getHudTransparency(hud.settings.imageTransparency, hud.active && hud.moving)/100,
+          '--hud-controls-opacity': 1-getHudTransparency(hud.settings.controlsTransparency, hud.active && hud.moving)/100,
+        } as React.CSSProperties}
         className={cn(
           'relative flex h-screen bg-content-area text-foreground',
+          hud.active && 'hud-mode',
           isDragging && 'select-none cursor-col-resize',
         )}
       >
@@ -1657,7 +1676,7 @@ export function MainLayout() {
             flex + shrink-0 与 aside 原有的 flex child 行为一致,不改变布局;
             peek 期 aside 变 fixed 出流,wrapper 宽度自然等于流内 spacer 宽。 */}
         {!isSettingsRoute && (
-          <div ref={sidebarBlockRef} className="flex shrink-0">
+          <div ref={sidebarBlockRef} data-hud-sidebar className="flex shrink-0">
             {/* pinning 冻结期的流内占位:抽屉保持 fixed 不动,由本 spacer 跑 0→W 的
                 250ms 宽度动画把主区推开;动画结束(peekState 回 idle)后同一帧内
                 spacer 卸载、aside 摘掉 fixed 落回流内 —— 两者矩形一致,交换无跳变。 */}
@@ -1815,6 +1834,7 @@ export function MainLayout() {
               rightSidebarMounted ? (
                 <RightSidebar
                   ref={rightSidebarRef}
+                  topbarAction={isMac && !isSecondaryWindow() && (rightSidebarSide === 'right' || isRightSidebarMaximized) ? <HudEntry /> : undefined}
                   // 路由不声明右栏时仅派生强制折叠，不写入 isRightSidebarCollapsed，
                   // 也不落按会话记忆的折叠偏好。
                   isCollapsed={isRightSidebarCollapsed || rightSidebarForceCollapsed}
@@ -1851,7 +1871,7 @@ export function MainLayout() {
           {/* 面板稳态宽度由 LayoutRoot 输出 CSS 百分比/clamp，BrowserWindow live resize
               不再逐像素回灌 React；设置页接管时非 chat 面板统一歇业。 */}
           <TabGroupHostProvider value={tabGroupHost}>
-            <LayoutRoot suppressNonChatPanels={isSettingsRoute} />
+            <LayoutRoot suppressNonChatPanels={isSettingsRoute} chatPresentationOnly={hud.active} />
           </TabGroupHostProvider>
         </BuiltinPanelBridgeProvider>
         {/* 拖面板换位(B3 转正;M3 起 mac 同步开闸——mac 顶栏全部保留窗口拖拽,
@@ -1911,6 +1931,7 @@ export function MainLayout() {
           rsbWindow.loaded &&
           (rsbDetached || isRightSidebarCollapsed) && (
             <div
+              data-hud-normal-chrome
               className="absolute right-0 top-0 z-50 flex h-[46px] items-center gap-1 pr-2"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >

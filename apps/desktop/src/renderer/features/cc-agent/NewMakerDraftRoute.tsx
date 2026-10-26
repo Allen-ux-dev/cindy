@@ -231,7 +231,7 @@ import {
 } from '@cindy/maker-shared/session-title';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { InvisibleWindowDragStrip } from '@/components/layout/windowDrag';
+import { InvisibleWindowDragStrip, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import {
   attachGhostMediaToSession,
   getGhostMediaHandoverFromDataTransfer,
@@ -5731,9 +5731,13 @@ export function NewMakerDraftRoute() {
               }}
             />
           )}
-          {/* mac 上本页不渲染通用 ContentHeader 且顶部无交互元素,垫一条透明
-          窗口拖拽条(windowDrag.tsx 约定) */}
-          <InvisibleWindowDragStrip />
+          {/* This page replaces ContentHeader, so its native drag owner must also
+            reserve the floating HUD entry's hit region. Sibling no-drag is insufficient. */}
+          <InvisibleWindowDragStrip>
+            {IS_MAC_PLATFORM && (
+              <div className="absolute right-[40px] top-0 h-full w-8" style={WINDOW_NO_DRAG_STYLE} />
+            )}
+          </InvisibleWindowDragStrip>
           {/* 固定入口由 MainLayout 承载；入口在右侧且未内嵌时保留第一行位置，
             避免其它 chip 与它重叠。 */}
           {!IS_MAC_PLATFORM &&
@@ -5860,6 +5864,7 @@ export function NewMakerDraftRoute() {
               />
 
               <div
+                data-hud-draft-composer
                 className={cn('flex w-full flex-col items-start gap-0', isDraftNarrow && 'order-3')}
               >
                 <div className="w-full">
@@ -6070,6 +6075,7 @@ export function NewMakerDraftRoute() {
                 {/* 用户 2026-09-06 重申撤掉首页订阅/赠送告知卡，见 DESIGN.md §1.1。
                     有模型时直接显示建议行；账号与余额详情继续在设置页查看。 */}
                 {!showProviderOnboardingCard && (
+                  <div data-hud-normal-chrome className="contents">
                   <HomeSuggestionList
                     key={`${dataOwnerId}:${isRemoteProjectDraft || isDeviceLinkDraft}:${i18n.resolvedLanguage ?? i18n.language}`}
                     narrow={isDraftNarrow}
@@ -6079,6 +6085,7 @@ export function NewMakerDraftRoute() {
                     onPreviewChange={handleSuggestionPreview}
                     composerTextFor={suggestionDescriptionText}
                   />
+                  </div>
                 )}
                 {/* 首页「新建目标」弹窗:无 sessionId → onCreate 建会话并 setGoal(见 handleCreateGoal)。
                 initialObjective = 点「新建目标」时输入框里已有的文字。 */}
