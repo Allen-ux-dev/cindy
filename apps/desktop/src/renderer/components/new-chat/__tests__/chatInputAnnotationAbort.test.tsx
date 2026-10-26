@@ -47,6 +47,8 @@ const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor:
   listAgentSkills: vi.fn(),
   localProviders: [] as ProviderView[],
   uploadChatFolder: vi.fn(),
+  hudActive: false,
+  captureScreen: vi.fn(),
 }));
 
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -104,10 +106,19 @@ vi.mock('@/hooks/useConnectedSource', () => ({ useConnectedSource: () => ({ hasC
 vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ agents: [], loading: false }) }));
 vi.mock('@/hooks/useAgentCapabilities', async (original) => ({ ...await original<typeof import('@/hooks/useAgentCapabilities')>(), useAgentCapabilities: () => ({ capabilities: null, loading: false }) }));
 
+vi.mock('@/features/hud/store', async (original) => {
+  const real = await original<typeof import('@/features/hud/store')>();
+  const { DEFAULT_HUD_SETTINGS } = await import('../../../../shared/hud');
+  const state = () => ({ ...real.getHudState(), active: h.hudActive,
+    settings: { ...DEFAULT_HUD_SETTINGS, allowScreen: true } });
+  return { ...real, useHud: state, getHudState: state };
+});
+
 const noOp = () => {};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api: any = new Proxy({}, { get: (_obj, key) => {
-  if (key === 'hud') return undefined; // Normal composer fixture: HUD is not mounted.
+  if (key === 'hud') return h.hudActive ? { capture: h.captureScreen } : undefined;
+  if (key === 'cacheImageFromBuffer') return async () => ({ url: 'cindy-media://blobs/hud.png' });
   if (key === 'setModel') return h.setModel;
   if (key === 'uploadChatFolder') return h.uploadChatFolder;
   if (key === 'getFilePath') return () => '/controller/docs';
@@ -137,6 +148,8 @@ const annotatedImage: AttachedFile = {
 };
 
 beforeEach(() => {
+  h.hudActive = false;
+  h.captureScreen.mockReset().mockResolvedValue(new Uint8Array([1]));
   h.uploadChatFolder.mockReset();
   h.listAgentSkills.mockReset().mockResolvedValue({ success: true, skills: [] });
   h.localProviders = [];
@@ -873,4 +886,64 @@ it('rechecks the built-in creator on every restored-task retry', async () => {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
   expect(onSend).toHaveBeenCalledTimes(1);
   expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);
+});
+
+// HUD regression / unit: exercise the real ChatInput + screen hook. Hook-only
+// tests cannot detect the empty-composer button/dispatch gates. An armed capture
+// must send an image with empty text, without accepting a suggested prompt.
+it.each([
+  { sessionId: undefined, action: 'click' },
+  { sessionId: 'hud-session', action: 'Enter' },
+])('sends an explicitly selected screen without text ($action, $sessionId)', async ({ sessionId, action }) => {
+  h.hudActive = true;
+  h.localProviders = [sshProvider('hud-provider', [sshModel('hud-model')], 'claude-code')];
+  const onSend = vi.fn().mockResolvedValue(true);
+  renderComposer({ sessionId, runtimeAgentKind: 'claude-code', vendorKey: 'cc',
+    initialModel: 'hud-model', initialProviderId: 'hud-provider', onSend });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const send = () => screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement;
+  const checkbox = screen.getByRole('checkbox', { name: 'hud.thisScreen' }) as HTMLInputElement;
+  expect(send().disabled).toBe(true);
+  fireEvent.click(checkbox);
+  await waitFor(() => expect(send().disabled).toBe(false));
+  fireEvent.click(checkbox);
+  expect(send().disabled).toBe(true);
+  if (sessionId) {
+    vi.spyOn(makerChatStore, 'getPromptRecommendationCompletionStatus').mockReturnValue({
+      turnStoppedByUser: false, hasTerminalError: false, sideTask: false,
+      hasBackgroundAgentWork: false, hasAutoDrainingQueue: false,
+    });
+    await act(async () => {
+      promptRecommendations.applyRunningSnapshot(new Map([[sessionId, { isRunning: true }]]));
+      promptRecommendations.noteTurnEnded(sessionId, 300);
+      promptRecommendations.applyRunningSnapshot(new Map());
+      promptRecommendations.settleCompletion(sessionId);
+      const seq = beginPromptRecommendationPrediction(sessionId, 300)!;
+      resolvePromptRecommendationPrediction(sessionId, 300, seq, 'Do not send this suggestion');
+    });
+    expect(screen.getByText('Do not send this suggestion')).toBeTruthy();
+  }
+  fireEvent.click(checkbox);
+  expect(screen.queryByText('Do not send this suggestion')).toBeNull();
+  const sendScreen = async () => {
+    await act(async () => {
+      if (action === 'Enter') fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' });
+      else fireEvent.click(send());
+    });
+  };
+  if (sessionId) {
+    h.captureScreen.mockRejectedValueOnce(new Error('HUD_SCREEN_PERMISSION'));
+    await sendScreen();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(checkbox.checked).toBe(true);
+    expect(send().disabled).toBe(false);
+  }
+  await sendScreen();
+  await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+  expect(onSend.mock.calls[0][0]).toBe('');
+  expect(onSend.mock.calls[0][4]).toEqual([expect.objectContaining({ category: 'image', mimeType: 'image/png' })]);
+  expect(h.captureScreen).toHaveBeenCalledWith({ text: '', explicit: true });
+  expect(checkbox.checked).toBe(false);
+  expect(send().disabled).toBe(true);
+  if (sessionId) clearPromptRecommendationSession(sessionId);
 });

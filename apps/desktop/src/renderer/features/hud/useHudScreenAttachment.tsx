@@ -130,5 +130,5 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
       {workingDir && <HudPathChip path={workingDir} />}
     </div>
   ) : null;
-  return { prepare, control };
+  return { prepare, control, hasPendingCapture: hud.active && armed };
 }

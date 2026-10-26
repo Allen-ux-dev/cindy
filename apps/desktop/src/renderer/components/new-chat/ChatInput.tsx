@@ -1426,7 +1426,8 @@ export function ChatInput({
       composerDocIsEmpty(ed.state.doc) &&
       latestAttachmentsRef.current.length === 0 &&
       browserCommentsRef.current.length === 0 &&
-      voiceDraftTextRef.current.length === 0
+      voiceDraftTextRef.current.length === 0 &&
+      !hudScreen.hasPendingCapture
     );
   };
   const resolvedPlaceholder = placeholder ?? t('newChat.chatInput.defaultPlaceholder');
@@ -5761,7 +5762,7 @@ export function ChatInput({
         // (截图在下方并入 filesToSend,与文本块里的 "attached as a labeled image"
         // caption 对应)。
         const text = formatBrowserCommentsForSend(commentsForSend, editorText);
-        if (!text && attachmentsForSend.length === 0) return;
+        if (!text && attachmentsForSend.length === 0 && !hudScreen.hasPendingCapture) return;
 
         // device-link 模型清单未结算或真实读取失败时禁止发送。模型选择器会同步显示
         // loading / error；这里兜住快捷键、语音等间接派发入口，避免旧快照继续路由。
@@ -6477,7 +6478,7 @@ export function ChatInput({
         return;
       }
       if (voiceBusyOnCurrentComposer) {
-        const currentCanSend = !isEditorEmpty(editor) || hasPreparedOrPendingAttachments;
+        const currentCanSend = !isEditorEmpty(editor) || hasPreparedOrPendingAttachments || hudScreen.hasPendingCapture;
         if (!voiceInput.isListening && !currentCanSend && voiceInput.draftText.trim().length === 0)
           return;
         if (voiceInputStopAndSendPromiseRef.current) {
@@ -6512,6 +6513,7 @@ export function ChatInput({
       editor,
       handleVoiceInputStop,
       hasPreparedOrPendingAttachments,
+      hudScreen.hasPendingCapture,
       queueEditActive,
       submitQueueEdit,
       voiceBusyOnCurrentComposer,
@@ -8990,7 +8992,7 @@ export function ChatInput({
 
   const hasMessage = !isEditorEmpty(editor);
   renderSnapshotRef.current = composerRenderSnapshot(trigger, hasMessage);
-  const hasComposerPayload = hasMessage || hasPreparedOrPendingAttachments || browserComments.length > 0;
+  const hasComposerPayload = hasMessage || hasPreparedOrPendingAttachments || browserComments.length > 0 || hudScreen.hasPendingCapture;
   const hasVoiceDraftText = voiceBusyOnCurrentComposer && voiceInput.draftText.trim().length > 0;
   const recommendationComposerState = {
     enabled: recommendationEnabled,
@@ -8999,7 +9001,7 @@ export function ChatInput({
       storageKeyForDraftRef.current === storageKey &&
       !isRestoringRef.current,
     hasMessage,
-    hasAttachments: hasPreparedOrPendingAttachments,
+    hasAttachments: hasPreparedOrPendingAttachments || hudScreen.hasPendingCapture,
     hasBrowserComments: browserComments.length > 0,
     hasVoiceDraftText,
     mutationLocked: composerMutationLocked,
