@@ -13,6 +13,9 @@ import type { ProviderView } from '@cindy/model-providers';
 import { sshNativeCodexProvider, sshModel, sshProvider } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import type { AttachedFile } from '@/lib/fileTypes';
 import { ChatInput } from '../ChatInput';
+import * as sessionLinkPaste from '../sessionLinkPaste';
+import * as sessionOrigin from '@/features/device-link/stickySessionOrigin';
+import { setDataOwnerGeneration, __testing as dataOwner } from '@/contexts/dataOwnerGeneration';
 import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
 import type { AtMentionPanel } from '../AtMentionPanel';
 import type { scanAtResources } from '@/lib/atResourceService';
@@ -169,7 +172,7 @@ beforeEach(() => {
   window.electronAPI = api;
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 });
-afterEach(() => { cleanup(); clearDraft('composer-regression'); h.remoteProviders = []; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); dataOwner.reset(); clearDraft('composer-regression'); h.remoteProviders = []; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function renderComposer(extra: Partial<ComponentProps<typeof ChatInput>> = {}) {
   const attachmentState: ComponentProps<typeof ChatInput>['attachmentState'] = {
@@ -946,4 +949,119 @@ it.each([
   expect(checkbox.checked).toBe(false);
   expect(send().disabled).toBe(true);
   if (sessionId) clearPromptRecommendationSession(sessionId);
+});
+
+// Greptile #7336 / unit: native capture must not begin with consent revoked
+// while the real send pipeline awaits reference hydration or voice refinement.
+it.each([
+  ['references', 'cancel'], ['references', 'reselect'], ['references', 'unchanged'],
+  ['voice', 'cancel'],
+] as const)('freezes HUD intent before %s wait (%s)', async (boundary, change) => {
+  h.hudActive = true;
+  h.localProviders = [sshProvider('hud-provider', [sshModel('hud-model')], 'claude-code')];
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const hydration = vi.spyOn(sessionLinkPaste, 'resolveSessionMessageReferencesForSend');
+  if (boundary === 'references') hydration.mockReturnValueOnce(pending);
+  else h.stop.mockReturnValueOnce(pending);
+  const onSend = vi.fn().mockResolvedValue(true);
+  const view = renderComposer({ sessionId: 'hud-revocation', runtimeAgentKind: 'claude-code', vendorKey: 'cc',
+    initialModel: 'hud-model', initialProviderId: 'hud-provider', onSend });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => h.editor!.commands.setContent('<p>Explain this</p>'));
+  const checkbox = screen.getByRole('checkbox', { name: 'hud.thisScreen' }) as HTMLInputElement;
+  fireEvent.click(checkbox);
+  if (boundary === 'voice') {
+    h.listening = true;
+    view.rerender(<ChatInput {...view.props} />);
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' }));
+  await waitFor(() => expect(boundary === 'voice' ? h.stop : hydration).toHaveBeenCalled());
+  expect(h.captureScreen).not.toHaveBeenCalled();
+  if (change !== 'unchanged') fireEvent.click(checkbox);
+  if (change === 'reselect') fireEvent.click(checkbox);
+  await act(async () => { release(); await pending; });
+  if (change === 'unchanged') {
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+    expect(h.captureScreen).toHaveBeenCalledOnce();
+  } else {
+    expect(h.captureScreen).not.toHaveBeenCalled();
+    await waitFor(() => expect(h.editor!.getText().trim()).toBe('Explain this'));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(checkbox.checked).toBe(change === 'reselect');
+  }
+});
+
+// The reported device-link path hydrates a serialized message reference after
+// clearing the editor; a later draft must also survive cancellation.
+it.each(['cancel', 'unchanged'] as const)('checks HUD consent after remote reference hydration (%s)', async change => {
+  h.hudActive = true;
+  setDataOwnerGeneration('hud-test-owner');
+  vi.spyOn(sessionOrigin, 'getStickySessionDeviceId').mockReturnValue('target');
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const hydration = vi.spyOn(sessionLinkPaste, 'resolveSerializedSessionMessageReferencesForSend')
+    .mockImplementationOnce(async references => { await pending; return [...references]; });
+  const onSend = vi.fn().mockResolvedValue(true);
+  renderComposer({ deviceLinkDeviceId: 'target', sessionId: 'hud-remote-reference', initialModel: 'gpt-6-sol', onSend });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => h.editor!.commands.setContent({ type: 'doc', content: [
+    { type: 'paragraph', content: [
+      { type: 'text', text: 'Explain this ' },
+      { type: 'mentionChip', attrs: sessionLinkPaste.pastedSessionChipAttrs({
+        href: 'xdt-maker://session/ee59672a-5591-48a7-a44d-aa97e3808c64?message=client-message-12345678', label: null,
+      }) },
+    ] },
+  ] }));
+  const checkbox = screen.getByRole('checkbox', { name: 'hud.thisScreen' });
+  fireEvent.click(checkbox);
+  fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' }));
+  await waitFor(() => expect(hydration).toHaveBeenCalledOnce());
+  expect(h.captureScreen).not.toHaveBeenCalled();
+  await act(async () => h.editor!.commands.setContent('<p>Next draft</p>'));
+  if (change === 'cancel') fireEvent.click(checkbox);
+  await act(async () => { release(); await pending; });
+  if (change === 'cancel') {
+    expect(h.captureScreen).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(h.editor!.getText()).toContain('Explain this');
+    expect(h.editor!.getJSON().content?.[0]?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'mentionChip' }),
+    ]));
+  } else {
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+    expect(h.captureScreen).toHaveBeenCalledOnce();
+  }
+  expect(h.editor!.getText()).toContain('Next draft');
+});
+
+it('freezes HUD consent before waiting for a folder transfer', async () => {
+  supplyRangeGeometry();
+  h.hudActive = true;
+  let finish!: (result: { ok: true; path: string; size: number }) => void;
+  h.uploadChatFolder.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  const onSend = vi.fn().mockResolvedValue(true);
+  function Composer() {
+    const attachmentState = useAttachments(undefined, 'composer-regression');
+    return <>
+      <button onClick={() => attachmentState.addFolderPath('/controller/docs', new File([], 'docs'))}>Drop folder</button>
+      <ChatInput draftKey="composer-regression" deviceLinkDeviceId="target"
+        sessionId="hud-folder" initialModel="gpt-6-sol" attachmentState={attachmentState}
+        hideRuntimeControls showFolderPicker={false} disableAutofocus onSend={onSend} />
+    </>;
+  }
+  render(<Composer />);
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => h.editor!.commands.setContent('<p>Read this folder</p>'));
+  fireEvent.click(screen.getByRole('button', { name: 'Drop folder' }));
+  await waitFor(() => expect(h.uploadChatFolder).toHaveBeenCalledOnce());
+  const checkbox = screen.getByRole('checkbox', { name: 'hud.thisScreen' });
+  fireEvent.click(checkbox);
+  fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' }));
+  await waitFor(() => expect(h.editor!.isEditable).toBe(false));
+  fireEvent.click(checkbox);
+  await act(async () => finish({ ok: true, path: '/cache/docs.bin', size: 100 }));
+  expect(h.captureScreen).not.toHaveBeenCalled();
+  expect(onSend).not.toHaveBeenCalled();
+  expect(h.editor!.getText()).toContain('Read this folder');
 });

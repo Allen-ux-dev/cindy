@@ -8,10 +8,10 @@ import { DEFAULT_HUD_SETTINGS } from '../../../../shared/hud';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/toast', () => ({ toast: { loading: vi.fn(), dismiss: vi.fn(), error: vi.fn() } }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
-  getDataOwnerGeneration: () => 1,
-  isDataOwnerGenerationCurrent: () => true,
+  getDataOwnerGeneration: () => consent.owner,
+  isDataOwnerGenerationCurrent: (owner: number) => owner === consent.owner,
 }));
-const consent = vi.hoisted(() => ({ generation: 0 }));
+const consent = vi.hoisted(() => ({ generation: 0, owner: 0 }));
 vi.mock('../store', () => ({
   useHud: () => ({ active: true, settings: { ...DEFAULT_HUD_SETTINGS, allowScreen: true } }),
   getHudState: () => ({ active: true, settings: { ...DEFAULT_HUD_SETTINGS, allowScreen: true } }),
@@ -19,6 +19,7 @@ vi.mock('../store', () => ({
 }));
 beforeEach(() => {
   consent.generation = 0;
+  consent.owner = 0;
 });
 import { useHudScreenAttachment } from '../useHudScreenAttachment';
 afterEach(cleanup);
@@ -38,15 +39,15 @@ it('keeps explicit screen intent for retry, and only accepted sends consume thei
   render(<Composer />);
   const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
   fireEvent.click(checkbox);
-  let first: Awaited<ReturnType<typeof current.prepare>>;
+  let first: Awaited<ReturnType<ReturnType<typeof current.begin>>>;
   await act(async () => {
-    first = await current.prepare('帮我处理这个问题');
+    first = await current.begin()('帮我处理这个问题');
   });
   expect(first!.attachment.url).toBe('test://screen.png');
   expect(checkbox.checked).toBe(true); // send rejected: do not accept
-  let retry: Awaited<ReturnType<typeof current.prepare>>;
+  let retry: Awaited<ReturnType<ReturnType<typeof current.begin>>>;
   await act(async () => {
-    retry = await current.prepare('帮我处理这个问题');
+    retry = await current.begin()('帮我处理这个问题');
   });
   expect(capture).toHaveBeenCalledTimes(2);
   act(() => retry!.accept());
@@ -78,9 +79,9 @@ it.each(['permission', 'HUD lifecycle', 'task', 'checkbox'])(
     }
     const view = render(<Composer />);
     fireEvent.click(screen.getByRole('checkbox'));
-    let pending!: Promise<Awaited<ReturnType<typeof current.prepare>>>;
+    let pending!: Promise<Awaited<ReturnType<ReturnType<typeof current.begin>>>>;
     await act(async () => {
-      pending = current.prepare('look at this screen');
+      pending = current.begin()('look at this screen');
       await Promise.resolve();
     });
     expect(cacheImageFromBuffer).toHaveBeenCalledOnce();
@@ -109,9 +110,9 @@ it('invalidates prepared attachments before dispatch when consent changes', asyn
     return current.control;
   }
   render(<Composer />);
-  let result!: Awaited<ReturnType<typeof current.prepare>>;
+  let result!: Awaited<ReturnType<ReturnType<typeof current.begin>>>;
   await act(async () => {
-    result = await current.prepare('look at this screen');
+    result = await current.begin()('look at this screen');
   });
   expect(typeof result?.assertCurrent).toBe('function');
   consent.generation += 2;
@@ -177,8 +178,8 @@ it('keeps an accepted capture valid after composer cleanup and later consent cha
     return current.control;
   }
   const view = render(<Composer />);
-  let capture!: NonNullable<Awaited<ReturnType<typeof current.prepare>>>;
-  await act(async () => { capture = (await current.prepare('look at this screen'))!; });
+  let capture!: NonNullable<Awaited<ReturnType<ReturnType<typeof current.begin>>>>;
+  await act(async () => { capture = (await current.begin()('look at this screen'))!; });
   act(() => capture.accept());
   view.unmount();
   consent.generation++;
@@ -195,8 +196,8 @@ it.each([false, true])('checks a deferred preflight with accepted=%s', async acc
   let current!: ReturnType<typeof useHudScreenAttachment>;
   function Composer() { current = useHudScreenAttachment('deferred'); return current.control; }
   const view = render(<Composer />);
-  let capture!: NonNullable<Awaited<ReturnType<typeof current.prepare>>>;
-  await act(async () => { capture = (await current.prepare('look at this screen'))!; });
+  let capture!: NonNullable<Awaited<ReturnType<ReturnType<typeof current.begin>>>>;
+  await act(async () => { capture = (await current.begin()('look at this screen'))!; });
   let finish!: (value: boolean) => void;
   const ready = new Promise<boolean>(resolve => { finish = resolve; });
   const preflight = hudScreenPreflight(capture, () => ready)!;
@@ -215,3 +216,31 @@ it.each([false, true])('checks a deferred preflight with accepted=%s', async acc
     expect(send).not.toHaveBeenCalled();
   }
 });
+
+// Greptile #7336: consent is frozen at click time, before upstream awaits.
+// No pixels may be acquired or cached after revocation, even if re-enabled.
+it.each(['checkbox', 'permission', 'HUD lifecycle', 'task', 'unmount', 'owner'] as const)(
+  'does not start delayed capture after %s changes', async change => {
+    const capture = vi.fn(async () => new Uint8Array([1]));
+    const cacheImageFromBuffer = vi.fn(async () => ({ url: 'test://screen.png' }));
+    Object.assign(window, { electronAPI: { hud: { capture }, cacheImageFromBuffer } });
+    let current!: ReturnType<typeof useHudScreenAttachment>;
+    function Composer({ session = 'a' }: { session?: string }) {
+      current = useHudScreenAttachment(session);
+      return current.control;
+    }
+    const view = render(<Composer />);
+    fireEvent.click(screen.getByRole('checkbox'));
+    const prepare = current.begin();
+    if (change === 'checkbox') {
+      fireEvent.click(screen.getByRole('checkbox'));
+      fireEvent.click(screen.getByRole('checkbox'));
+    } else if (change === 'task') view.rerender(<Composer session="b" />);
+    else if (change === 'unmount') view.unmount();
+    else if (change === 'owner') consent.owner++;
+    else consent.generation += 2;
+    await expect(prepare('Explain this')).rejects.toThrow('capture revoked');
+    expect(capture).not.toHaveBeenCalled();
+    expect(cacheImageFromBuffer).not.toHaveBeenCalled();
+  },
+);

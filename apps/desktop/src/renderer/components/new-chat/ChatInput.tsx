@@ -5461,7 +5461,7 @@ export function ChatInput({
     () => {},
   );
   const dispatchSend = useCallback(
-    async (deliveryMode: MessageDeliveryMode = 'queue') => {
+    async (deliveryMode: MessageDeliveryMode = 'queue', prepareHudScreen = hudScreen.begin()) => {
       if (!editor) return;
       if (disabled || sessionModelLoading) return;
       if ((folderTransfers.hasPending || waitingForFoldersRef.current) &&
@@ -6234,7 +6234,7 @@ export function ChatInput({
           // Snapshot/optimistic clear precedes capture: remote typing during the
           // native await belongs to the next draft. Existing failure restore
           // preserves that newer draft and restores the source when safe.
-          const screenshot = await hudScreen.prepare(text);
+          const screenshot = await prepareHudScreen(text);
           if (screenshot) {
             filesToSend = [...(filesToSend ?? []), screenshot.attachment];
             acceptHudScreen = screenshot.accept;
@@ -6478,6 +6478,8 @@ export function ChatInput({
         await submitQueueEdit();
         return;
       }
+      // Voice refinement precedes dispatchSend, so pin consent at the original click.
+      const prepareHudScreen = hudScreen.begin();
       if (voiceBusyOnCurrentComposer) {
         const currentCanSend = !isEditorEmpty(editor) || hasPreparedOrPendingAttachments || hudScreen.hasPendingCapture;
         if (!voiceInput.isListening && !currentCanSend && voiceInput.draftText.trim().length === 0)
@@ -6495,7 +6497,7 @@ export function ChatInput({
             // failed after the user pressed Send.
             return;
           }
-          await dispatchSend(deliveryMode);
+          await dispatchSend(deliveryMode, prepareHudScreen);
         })().finally(() => {
           if (voiceInputStopAndSendPromiseRef.current === stopAndSend) {
             voiceInputStopAndSendPromiseRef.current = null;
@@ -6506,7 +6508,7 @@ export function ChatInput({
         return;
       }
       acceptPromptRecommendation();
-      await dispatchSend(deliveryMode);
+      await dispatchSend(deliveryMode, prepareHudScreen);
     },
     [
       acceptPromptRecommendation,
@@ -6514,7 +6516,7 @@ export function ChatInput({
       editor,
       handleVoiceInputStop,
       hasPreparedOrPendingAttachments,
-      hudScreen.hasPendingCapture,
+      hudScreen,
       queueEditActive,
       submitQueueEdit,
       voiceBusyOnCurrentComposer,

@@ -26,90 +26,97 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
       intentGeneration.current++;
     };
   }, [sessionId, hud.active]);
-  async function prepare(
-    text: string,
-  ): Promise<(HudScreenSubmission & { attachment: AttachedFile }) | undefined> {
-    if (!hud.active || (!armed && !isHudScreenQuestion(text))) return;
+  // Freeze consent before the send pipeline yields (references, folders, voice).
+  // A delayed prepare must never pair an old checkbox with a newer consent epoch.
+  function begin() {
     const intent = intentGeneration.current;
     const owner = getDataOwnerGeneration();
     const generation = getHudCaptureGeneration();
-    let accepted = false;
-    const assertCurrent = () => {
-      if (accepted) return;
-      if (
-        intent !== intentGeneration.current ||
-        generation !== getHudCaptureGeneration() ||
-        !isDataOwnerGenerationCurrent(owner) ||
-        !getHudState().active ||
-        !getHudState().settings.allowScreen
-      )
-        throw new HudScreenRevokedError();
-    };
-    const id = toast.loading(t('hud.capturing'));
-    try {
-      const bytes = await window.electronAPI.hud.capture({ text, explicit: armed });
+    const active = hud.active;
+    const explicit = armed;
+    return async function prepare(
+      text: string,
+    ): Promise<(HudScreenSubmission & { attachment: AttachedFile }) | undefined> {
+      if (!active || (!explicit && !isHudScreenQuestion(text))) return;
+      let accepted = false;
+      const assertCurrent = () => {
+        if (accepted) return;
+        if (
+          intent !== intentGeneration.current ||
+          generation !== getHudCaptureGeneration() ||
+          !isDataOwnerGenerationCurrent(owner) ||
+          !getHudState().active ||
+          !getHudState().settings.allowScreen
+        )
+          throw new HudScreenRevokedError();
+      };
       assertCurrent();
-      const name = `screen-${Date.now()}.png`;
-      let url: string | undefined;
-      let base64: string | undefined;
-      if (sessionId) {
-        url = (
-          await window.electronAPI.cacheImageFromBuffer({
-            sessionId,
-            buffer: bytes,
-            mimeType: 'image/png',
-            suggestedName: name,
-          })
-        ).url;
-      } else {
-        // Same in-memory image representation used by the existing new-task composer.
-        base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result).split(',')[1]);
-          reader.onerror = reject;
-          reader.readAsDataURL(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
-        });
+      const id = toast.loading(t('hud.capturing'));
+      try {
+        const bytes = await window.electronAPI.hud.capture({ text, explicit });
+        assertCurrent();
+        const name = `screen-${Date.now()}.png`;
+        let url: string | undefined;
+        let base64: string | undefined;
+        if (sessionId) {
+          url = (
+            await window.electronAPI.cacheImageFromBuffer({
+              sessionId,
+              buffer: bytes,
+              mimeType: 'image/png',
+              suggestedName: name,
+            })
+          ).url;
+        } else {
+          // Same in-memory image representation used by the existing new-task composer.
+          base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+          });
+        }
+        assertCurrent();
+        const attachment: AttachedFile = {
+          id: crypto.randomUUID(),
+          name,
+          originalName: name,
+          path: `clipboard://${name}`,
+          category: 'image',
+          ext: '.png',
+          mimeType: 'image/png',
+          size: bytes.byteLength,
+          url,
+          base64,
+        };
+        return {
+          attachment,
+          assertCurrent,
+          accept() {
+            if (accepted) return;
+            accepted = true;
+            if (intent !== intentGeneration.current || !isDataOwnerGenerationCurrent(owner)) return;
+            intentGeneration.current++;
+            setArmed(false);
+          },
+        };
+      } catch (error) {
+        if (error instanceof HudScreenRevokedError) throw error;
+        const reason = extractIpcError(error)?.message;
+        toast.error(
+          t(
+            reason === 'HUD_SCREEN_DISABLED'
+              ? 'hud.screenDisabled'
+              : reason === 'HUD_SCREEN_PERMISSION'
+                ? 'hud.screenPermission'
+                : 'hud.captureFailed',
+          ),
+        );
+        throw error;
+      } finally {
+        toast.dismiss(id);
       }
-      assertCurrent();
-      const attachment: AttachedFile = {
-        id: crypto.randomUUID(),
-        name,
-        originalName: name,
-        path: `clipboard://${name}`,
-        category: 'image',
-        ext: '.png',
-        mimeType: 'image/png',
-        size: bytes.byteLength,
-        url,
-        base64,
-      };
-      return {
-        attachment,
-        assertCurrent,
-        accept() {
-          if (accepted) return;
-          accepted = true;
-          if (intent !== intentGeneration.current || !isDataOwnerGenerationCurrent(owner)) return;
-          intentGeneration.current++;
-          setArmed(false);
-        },
-      };
-    } catch (error) {
-      if (error instanceof HudScreenRevokedError) throw error;
-      const reason = extractIpcError(error)?.message;
-      toast.error(
-        t(
-          reason === 'HUD_SCREEN_DISABLED'
-            ? 'hud.screenDisabled'
-            : reason === 'HUD_SCREEN_PERMISSION'
-              ? 'hud.screenPermission'
-              : 'hud.captureFailed',
-        ),
-      );
-      throw error;
-    } finally {
-      toast.dismiss(id);
-    }
+    };
   }
   const control = hud.active ? (
     <div className="hud-composer-meta-row">
@@ -130,5 +137,5 @@ export function useHudScreenAttachment(sessionId?: string | null, workingDir?: s
       {workingDir && <HudPathChip path={workingDir} />}
     </div>
   ) : null;
-  return { prepare, control, hasPendingCapture: hud.active && armed };
+  return { begin, control, hasPendingCapture: hud.active && armed };
 }
