@@ -1,5 +1,6 @@
 import { configureSessionModelInterfaceStorage, sessionModelInterface } from './session-model-interface.js';
 import { readGeneratedImageEpoch } from '../cindy-media/generatedImageStorage';
+import { resolveHelperSurface } from '../mcp-integrations/helperSurface.js';
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -121,9 +122,11 @@ import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   dispatchInterAgentMessage,
   captureRemoteWorkerReportSettlement,
+  captureLocalWorkerReport,
   getSessionActiveInputClientIds,
   getSessionInputProvenance,
   isActiveInputOwnerAuthored,
+  isActiveInputAccountScoped,
   isSessionInTurn,
   wireSessionToIpc,
   releaseSessionBindingsForOwnerBoundary,
@@ -204,7 +207,7 @@ import {
   resolveVerifiedContextWindow,
   resolveModelDefaultContextWindow,
 } from './catalog-to-descriptors.js';
-import { readModelContextLimit } from './model-context-limit-store.js';
+import { readModelContextLimit, resolveModelCompactionPct } from './model-context-limit-store.js';
 import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts, readStoredSessionContextWindowBudget, resolveConfiguredContextWindow, applySessionContextWindowBudgetToCreateOpts } from './model-context-settings.js';
 import {
   prepareCodexCustomContextCatalog,
@@ -1133,7 +1136,22 @@ export function getMaker(): Maker {
         const session = _maker?.getSession(sessionId);
         if (!session || session.instanceId !== sessionInstanceId) return null;
         const snapshot = resolveGhostFsSessionSnapshot((id) => _maker?.getSession(id), sessionId, sessionInstanceId);
+        const acceptedInput = getSessionInputProvenance(sessionId);
+        const accountInput = isActiveInputAccountScoped(sessionId);
         return {
+          contributionAccountAllowed: async (acceptedOperation = false) => {
+            const current = () => !isAppSessionBoundaryPending() && _maker?.getSession(sessionId) === session
+              && (acceptedOperation ? accountInput : isActiveInputAccountScoped(sessionId));
+            if (!current()) return false;
+            const db = getCurrentDbClientSnapshot();
+            if (!db) return false;
+            // An authorized upload outlives the input that started it. Keep that
+            // input's identity; recheck task, owner, helper surface and permissions.
+            const surface = await resolveHelperSurface(db.client, sessionId,
+              acceptedOperation ? () => acceptedInput : getSessionInputProvenance);
+            return surface !== 'restricted' && db === getCurrentDbClientSnapshot()
+              && current();
+          },
           permissionMode: session.stablePermissionModeState?.mode ?? null,
           remoteHostId: session.remoteHostId,
           isCurrent: () => !!snapshot && !snapshot.planModeEnabled && snapshot.permissionMode !== 'plan'
@@ -1298,6 +1316,7 @@ export function getMaker(): Maker {
         };
       },
       dispatchInterAgentMessage,
+      captureLocalWorkerReport,
     } satisfies OrcaBridgeMcpDeps;
     const orcaWorkerBridgeProvider = createOrcaWorkerBridgeMcpProvider(orcaBridgeDeps);
     remoteWorkerBridge = createOrcaRemoteWorkerBridge({
@@ -1450,6 +1469,10 @@ export function getMaker(): Maker {
         const source = resolveDesktopModelContextProviderId(catalog, 'claude-code', providerId, modelId);
         return source ? readModelContextLimit('claude-code', source, modelId)
           ?? resolveModelDefaultContextWindow(catalog, 'claude-code', source, modelId) : null;
+      },
+      resolveModelCompactionPct: (providerId, modelId) => {
+        const source = resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'claude-code', providerId, modelId);
+        return resolveModelCompactionPct(getDesktopSelectableCatalog(), 'claude-code', source, modelId);
       },
       resolveVerifiedContextWindow: (providerId, modelId) =>
         resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'claude-code',
@@ -1796,6 +1819,10 @@ export function getMaker(): Maker {
         const source = resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId);
         return source ? readModelContextLimit('codex', source, modelId) : null;
       },
+      resolveModelCompactionPct: (providerId, modelId) => {
+        const source = resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId);
+        return resolveModelCompactionPct(getDesktopSelectableCatalog(), 'codex', source, modelId);
+      },
       resolveVerifiedContextWindow: (providerId, modelId) =>
         resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'codex',
           resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId), modelId),
@@ -2109,6 +2136,7 @@ export function getMaker(): Maker {
               modelId,
               contextWindow,
               modelIds: catalog.providers.find(provider => provider.id === source)?.models.codex?.map(model => model.id),
+              resolveCompactionPct: (id) => resolveModelCompactionPct(getDesktopSelectableCatalog(), 'codex', source, id),
               resolveContextWindow: (nativeModelId) => {
                 return (source ? readModelContextLimit('codex', source, nativeModelId) : null)
                   ?? resolveModelDefaultContextWindow(catalog, 'codex', source, nativeModelId);
@@ -2215,7 +2243,6 @@ export function getMaker(): Maker {
         sessionInstanceId,
         mcpCallerKind,
         mcpCallerAttested,
-        nativeHarnessHook,
         workingDir,
         memoryScopeKey,
         remoteHostId,
@@ -2232,7 +2259,6 @@ export function getMaker(): Maker {
           sessionId,
           mcpCallerKind,
           mcpCallerAttested,
-          ...(nativeHarnessHook ? { nativeHarnessHook } : {}),
           ...(sessionInstanceId ? { sessionInstanceId } : {}),
           workingDir,
           ...(memoryScopeKey ? { memoryScopeKey } : {}),
