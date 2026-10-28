@@ -115,7 +115,7 @@ export interface AppShortcutDefinition {
    * —— store 与设置页双端都按此校验拦截。
    */
   menuBacked?: boolean;
-  /** Native global registration requires an Electron accelerator. */
+  /** Native global registration requires an accelerator that does not steal editing shortcuts. */
   globalBacked?: boolean;
   /** 缺省 = 全平台可用。 */
   platforms?: ReadonlyArray<'darwin' | 'win32' | 'linux'>;
@@ -467,7 +467,7 @@ function collidesWithNonRebindableDefault(
 
 /**
  * 规整 override 集合: 丢弃未知 id、不可改绑 id、当前平台不可用 id、非法
- * combo、与不可改绑快捷键默认组合撞键的存量 combo。null 值 (删除绑定) 原样
+ * combo、全局注册不可用或与不可改绑快捷键默认组合撞键的存量 combo。null 值 (删除绑定) 原样
  * 保留。版本升级删除某 id 后, 存量 override 在 load 时自动自愈。
  */
 export function normalizeAppShortcutOverrides(raw: unknown, platform: string): AppShortcutOverrides {
@@ -484,6 +484,11 @@ export function normalizeAppShortcutOverrides(raw: unknown, platform: string): A
     }
     const normalized = normalizeAppShortcutCombo(value);
     if (!normalized) continue;
+    // Old app-scoped HUD overrides may still be unsafe when registered globally.
+    if (
+      (def.scope === 'global' || def.globalBacked) &&
+      !isGlobalAppShortcutComboUsable(normalized, platform)
+    ) continue;
     if (collidesWithNonRebindableDefault(normalized, platform)) continue;
     result[key] = normalized;
   }
@@ -798,7 +803,7 @@ export function isAppShortcutComboBindable(comboValue: AppShortcutCombo): boolea
 const GLOBAL_EDITING_CODES = new Set(['KeyA', 'KeyC', 'KeyV', 'KeyX', 'KeyY', 'KeyZ']);
 
 /**
- * global scope 条目的额外约束: 必须能表达为 Electron accelerator (globalShortcut
+ * global scope / globalBacked 条目的额外约束: 必须能表达为 Electron accelerator (globalShortcut
  * 只认 accelerator, 表达不了 = 绑定了也永远不触发), 且不得占用编辑惯例键 ——
  * 全局快捷键会在所有应用里截走按键。系统保留键另由 keyboardReserved 判定。
  */

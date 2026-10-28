@@ -95,6 +95,20 @@ it('updates both settings entries and the live shortcut hint after edit, delete 
   expect(hud.getByText('⇧⌘H')).toBeTruthy();
   expect(shortcuts.getByText('⇧⌘H')).toBeTruthy();
   expect(screen.getByTestId('hint').textContent).toBe('⇧⌘H');
+  // Both production settings entries must reject a system-wide redo binding.
+  const hudShortcutRow = shortcuts
+    .getByText('settings.shortcuts.items.hud-toggle-pass-through.label')
+    .closest('.flex.items-center') as HTMLElement;
+  const hudWrites = setOverride.mock.calls.length;
+  for (const entry of [hud, within(hudShortcutRow)]) {
+    fireEvent.click(entry.getByRole('button', { name: 'settings.shortcuts.editAria' }));
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'y', code: 'KeyY', metaKey: true });
+    });
+    expect(entry.getByText('settings.shortcuts.errors.globalUnusable')).toBeTruthy();
+    expect(setOverride).toHaveBeenCalledTimes(hudWrites);
+    expect(screen.getByTestId('hint').textContent).toBe('⇧⌘H');
+  }
   // Main sync regression / unit: the extracted binding UI must retain the
   // upstream global-shortcut validation and registration-failure broadcasts.
   const screenshotRow = shortcuts

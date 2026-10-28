@@ -539,6 +539,23 @@ describe('HUD native IPC lifecycle', () => {
     toggle(); // A queued native key event after HUD exit must not re-enable it.
     expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: false });
   });
+  it('refuses an unsafe editing shortcut at the native registration boundary', async () => {
+    env.shortcutCombo = { code: 'KeyY', meta: true, ctrl: false, alt: false, shift: false };
+    const win = windowMock();
+    attachHudWindow(win as unknown as BrowserWindow);
+    const event = { sender: win.webContents };
+    await env.handlers.get('hud:active')!(event, true);
+    try {
+      expect(env.shortcuts.has('Command+Y')).toBe(false);
+      expect(() => env.handlers.get('hud:pass-through')!(event, true)).toThrow(
+        'HUD_SHORTCUT_UNAVAILABLE',
+      );
+      expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: false });
+    } finally {
+      await env.handlers.get('hud:active')!(event, false);
+    }
+  });
+
   it('does not enable without a recovery shortcut and rejects untrusted region reports', async () => {
     const win = windowMock();
     attachHudWindow(win as unknown as BrowserWindow);

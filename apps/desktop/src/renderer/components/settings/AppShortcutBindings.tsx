@@ -131,7 +131,10 @@ export function AppShortcutBindings({
       ) {
         return t('settings.shortcuts.errors.menuAccelerator');
       }
-      if (selfDef.scope === 'global' && !isGlobalAppShortcutComboUsable(combo, platform)) {
+      if (
+        (selfDef.scope === 'global' || selfDef.globalBacked) &&
+        !isGlobalAppShortcutComboUsable(combo, platform)
+      ) {
         return t('settings.shortcuts.errors.globalUnusable');
       }
       // 跨 id 冲突: 与 main store 写入兜底共用 shared 的 findAppShortcutConflict。

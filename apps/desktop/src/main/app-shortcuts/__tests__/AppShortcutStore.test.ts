@@ -134,6 +134,35 @@ describe('AppShortcutStore', () => {
     expect(winStore.setOverride('new-maker', combo('IntlYen', { ctrl: true }))).toBeNull();
   });
 
+  it('rejects HUD overrides that steal global editing shortcuts', () => {
+    const store = makeStore('darwin');
+    expect(store.setOverride('hud-toggle-pass-through', combo('KeyY', { meta: true }))).toBe(
+      'global-unusable',
+    );
+    expect(store.getOverrides()).toEqual({});
+    expect(fs.existsSync(filePath())).toBe(false);
+    expect(store.setOverride('hud-toggle-pass-through', combo('KeyY', { meta: true, shift: true }))).toBeNull();
+    expect(makeStore('darwin').getEffectiveCombos('hud-toggle-pass-through')).toEqual([
+      combo('KeyY', { meta: true, shift: true }),
+    ]);
+  });
+
+  it('does not reactivate a legacy HUD editing shortcut when loading saved overrides', () => {
+    const raw = JSON.stringify({ version: 1, overrides: {
+      'hud-toggle-pass-through': combo('KeyY', { meta: true }),
+      'toggle-sidebar': combo('KeyJ', { meta: true }),
+    } });
+    fs.writeFileSync(filePath(), raw);
+    const store = makeStore('darwin');
+    expect(store.getEffectiveCombos('hud-toggle-pass-through')).toEqual([
+      combo('KeyH', { meta: true, shift: true }),
+    ]);
+    expect(store.getOverrides()['toggle-sidebar']).toEqual(combo('KeyJ', { meta: true }));
+    expect(fs.readFileSync(filePath(), 'utf-8')).toBe(raw);
+    expect(store.setOverride('hud-toggle-pass-through', null)).toBeNull();
+    expect(makeStore('darwin').getEffectiveCombos('hud-toggle-pass-through')).toEqual([]);
+  });
+
   it('guards the system-wide screenshot shortcut', () => {
     const store = makeStore('win32');
     // 全局键在所有应用里截走按键: 占用 Ctrl+C 会让别的应用无法复制

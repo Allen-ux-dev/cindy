@@ -108,7 +108,10 @@ export class AppShortcutStore {
     ) {
       return 'menu-inexpressible';
     }
-    if (def.scope === 'global' && !isGlobalAppShortcutComboUsable(normalized, this.options.platform)) {
+    if (
+      (def.scope === 'global' || def.globalBacked) &&
+      !isGlobalAppShortcutComboUsable(normalized, this.options.platform)
+    ) {
       return 'global-unusable';
     }
     const current = this.load();

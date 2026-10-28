@@ -9,7 +9,7 @@ import {
   type BrowserWindow,
 } from 'electron';
 import path from 'node:path';
-import { comboToElectronAccelerator } from '../../shared/appShortcuts';
+import { comboToElectronAccelerator, isGlobalAppShortcutComboUsable } from '../../shared/appShortcuts';
 import {
   getAppShortcutStore,
   isAppShortcutRecordingActive,
@@ -212,6 +212,7 @@ const pointer = createHudPassThroughController({
   },
   registerShortcut(callback) {
     const combo = getAppShortcutStore().getEffectiveCombos('hud-toggle-pass-through')[0];
+    if (!combo || !isGlobalAppShortcutComboUsable(combo, process.platform)) return false;
     const accelerator = combo && comboToElectronAccelerator(combo, process.platform);
     if (!accelerator || globalShortcut.isRegistered(accelerator)) return false;
     if (!globalShortcut.register(accelerator, callback)) return false;
