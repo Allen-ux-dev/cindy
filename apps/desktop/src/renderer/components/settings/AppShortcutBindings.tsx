@@ -20,6 +20,7 @@ import {
   getAppShortcutDefinition,
   isAppShortcutAvailableOnPlatform,
   isAppShortcutComboBindable,
+  isGlobalAppShortcutComboUsable,
   type AppShortcutCombo,
   type AppShortcutDefinition,
   type AppShortcutId,
@@ -27,6 +28,7 @@ import {
 import { isSystemReservedShortcut } from '../../../shared/keyboardReserved';
 import {
   getAppShortcutCombos,
+  getAppShortcutGlobalFailures,
   getAppShortcutOverrides,
   getAppShortcutPlatform,
   subscribeAppShortcuts,
@@ -48,14 +50,17 @@ export function AppShortcutBindings({
 }) {
   const { t } = useTranslation();
   const platform = getAppShortcutPlatform();
-  // overrides 快照订阅: 改绑 / reset 后 main 广播 → appShortcutStore 通知 →
-  // 这里重渲染。快照序列化做 useSyncExternalStore 的相等性判定。
-  const overridesJson = useSyncExternalStore(subscribeAppShortcuts, () =>
-    JSON.stringify(getAppShortcutOverrides()),
+  // Include registration failures so runtime-only changes refresh both settings entries.
+  const snapshotJson = useSyncExternalStore(subscribeAppShortcuts, () =>
+    JSON.stringify({
+      overrides: getAppShortcutOverrides(),
+      globalFailures: getAppShortcutGlobalFailures(),
+    }),
   );
-  const overrides = JSON.parse(overridesJson) as Partial<
-    Record<AppShortcutId, AppShortcutCombo | null>
-  >;
+  const { overrides, globalFailures } = JSON.parse(snapshotJson) as {
+    overrides: Partial<Record<AppShortcutId, AppShortcutCombo | null>>;
+    globalFailures: AppShortcutId[];
+  };
   const [recordingId, setRecordingId] = useState<AppShortcutId | null>(null);
   const [error, setError] = useState<RecordingError | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -125,6 +130,9 @@ export function AppShortcutBindings({
         comboToElectronAccelerator(combo, platform) === null
       ) {
         return t('settings.shortcuts.errors.menuAccelerator');
+      }
+      if (selfDef.scope === 'global' && !isGlobalAppShortcutComboUsable(combo, platform)) {
+        return t('settings.shortcuts.errors.globalUnusable');
       }
       // 跨 id 冲突: 与 main store 写入兜底共用 shared 的 findAppShortcutConflict。
       const conflictId = findAppShortcutConflict(id, combo, getAppShortcutOverrides(), platform);
@@ -265,7 +273,12 @@ export function AppShortcutBindings({
           const isRecording = recordingId === def.id;
           const customized = def.id in overrides;
           const combos = getAppShortcutCombos(def.id);
-          const rowError = error?.id === def.id ? error.message : null;
+          const rowError =
+            error?.id === def.id
+              ? error.message
+              : combos.length > 0 && globalFailures.includes(def.id)
+                ? t('settings.shortcuts.errors.globalOccupied')
+                : null;
           return (
             <div key={def.id} className="flex items-center gap-2 py-2">
               {/* 条目标题 + 说明双行: 标题主文字色 + 说明次级色,

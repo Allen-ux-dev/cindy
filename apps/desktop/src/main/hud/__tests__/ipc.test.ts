@@ -169,6 +169,31 @@ describe('HUD native IPC lifecycle', () => {
     win.unmaximize();
     expect(bounds).toEqual(normal);
   });
+  it('waits for other global shortcuts to release their old keys when restoring defaults', async () => {
+    env.shortcutCombo = { code: 'KeyA', meta: false, ctrl: true, alt: false, shift: true };
+    const win = windowMock();
+    attachHudWindow(win as unknown as BrowserWindow);
+    const event = { sender: win.webContents };
+    await env.handlers.get('hud:active')!(event, true);
+    env.handlers.get('hud:pointer-region')!(event, 'background');
+    env.shortcuts.get('Ctrl+Shift+A')!();
+    const screenshot = vi.fn();
+    env.shortcuts.set('Shift+Command+H', screenshot);
+    env.shortcutCombo = { code: 'KeyH', meta: true, ctrl: false, alt: false, shift: true };
+    env.shortcutListeners.forEach((fn) => fn());
+    // The screenshot subscriber runs later in the same store notification.
+    env.shortcuts.delete('Shift+Command+H');
+    env.shortcuts.set('Ctrl+Shift+A', screenshot);
+    await Promise.resolve();
+    expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: true });
+    expect(env.shortcuts.has('Shift+Command+H')).toBe(true);
+    env.shortcuts.get('Shift+Command+H')!();
+    expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: false });
+    env.shortcuts.get('Ctrl+Shift+A')!();
+    expect(screenshot).toHaveBeenCalledOnce();
+    await env.handlers.get('hud:active')!(event, false);
+  });
+
   it('hot-swaps the configured shortcut, pauses recording, and fails closed on removal/conflict', async () => {
     const win = windowMock();
     attachHudWindow(win as unknown as BrowserWindow);
@@ -180,6 +205,7 @@ describe('HUD native IPC lifecycle', () => {
     expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: true });
     env.shortcutCombo = { code: 'KeyJ', meta: true, ctrl: false, alt: false, shift: true };
     env.shortcutListeners.forEach((fn) => fn());
+    await Promise.resolve();
     expect([...env.shortcuts.keys()]).toEqual(['Shift+Command+J']);
     oldCallback(); // queued old registration must not toggle the new one
     expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: true });
@@ -191,14 +217,17 @@ describe('HUD native IPC lifecycle', () => {
     expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
     env.shortcutCombo = null;
     env.shortcutListeners.forEach((fn) => fn());
+    await Promise.resolve();
     expect(env.shortcuts.size).toBe(0);
     expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: false });
     env.shortcutCombo = { code: 'KeyH', meta: true, ctrl: false, alt: false, shift: true };
     env.shortcutListeners.forEach((fn) => fn());
+    await Promise.resolve();
     [...env.shortcuts.values()][0]();
     env.shortcutAvailable = false;
     env.shortcutCombo = { code: 'KeyK', meta: true, ctrl: false, alt: false, shift: true };
     env.shortcutListeners.forEach((fn) => fn());
+    await Promise.resolve();
     expect(env.handlers.get('hud:get')!(event)).toMatchObject({ passThrough: false });
     expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
     await env.handlers.get('hud:active')!(event, false);

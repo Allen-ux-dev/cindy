@@ -26,7 +26,7 @@ function CurrentHint() {
 afterEach(cleanup);
 it('updates both settings entries and the live shortcut hint after edit, delete and reset', async () => {
   let overrides: AppShortcutOverrides = {};
-  let notify: (state: { overrides: AppShortcutOverrides }) => void = () => {};
+  let notify: (state: { overrides: AppShortcutOverrides; globalFailures?: AppShortcutId[] }) => void = () => {};
   const publish = () => {
     notify({ overrides: { ...overrides } });
     return Promise.resolve({ overrides });
@@ -95,4 +95,24 @@ it('updates both settings entries and the live shortcut hint after edit, delete 
   expect(hud.getByText('⇧⌘H')).toBeTruthy();
   expect(shortcuts.getByText('⇧⌘H')).toBeTruthy();
   expect(screen.getByTestId('hint').textContent).toBe('⇧⌘H');
+  // Main sync regression / unit: the extracted binding UI must retain the
+  // upstream global-shortcut validation and registration-failure broadcasts.
+  const screenshotRow = shortcuts
+    .getByText('settings.shortcuts.items.region-screenshot.label')
+    .closest('.flex.items-center') as HTMLElement;
+  const writesBeforeInvalidBinding = setOverride.mock.calls.length;
+  fireEvent.click(within(screenshotRow).getByRole('button', { name: 'settings.shortcuts.editAria' }));
+  await act(async () => {
+    fireEvent.keyDown(window, { key: '+', code: 'NumpadAdd', metaKey: true });
+  });
+  expect(within(screenshotRow).getByText('settings.shortcuts.errors.globalUnusable')).toBeTruthy();
+  expect(setOverride).toHaveBeenCalledTimes(writesBeforeInvalidBinding);
+  // Clear the row's local validation error without changing the saved binding.
+  fireEvent.click(within(screenshotRow).getByRole('button', { name: 'settings.shortcuts.editAria' }));
+  fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
+  act(() => notify({ overrides, globalFailures: ['region-screenshot'] }));
+  expect(within(screenshotRow).getByText('settings.shortcuts.errors.globalOccupied')).toBeTruthy();
+  act(() => notify({ overrides, globalFailures: [] }));
+  expect(within(screenshotRow).queryByText('settings.shortcuts.errors.globalOccupied')).toBeNull();
+
 });

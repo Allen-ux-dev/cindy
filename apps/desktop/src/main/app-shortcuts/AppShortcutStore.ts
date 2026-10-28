@@ -10,6 +10,7 @@ import {
   isAppShortcutAvailableOnPlatform,
   isAppShortcutComboBindable,
   isAppShortcutId,
+  isGlobalAppShortcutComboUsable,
   normalizeAppShortcutCombo,
   normalizeAppShortcutOverrides,
   type AppShortcutCombo,
@@ -34,6 +35,7 @@ export type AppShortcutOverrideRejection =
   | 'not-bindable'
   | 'system-reserved'
   | 'menu-inexpressible'
+  | 'global-unusable'
   | 'conflict';
 
 export interface AppShortcutStoreOptions {
@@ -71,11 +73,7 @@ export class AppShortcutStore {
 
   /** main 消费端 (菜单 accelerator / before-input-event) 实时取某 id 的生效组合。 */
   getEffectiveCombos(id: AppShortcutId): AppShortcutCombo[] {
-    if (!isAppShortcutAvailableOnPlatform(id, this.options.platform)) return [];
-    const override = this.load()[id];
-    if (override === null) return []; // 用户删除了绑定
-    if (override) return [override];
-    return getAppShortcutDefinition(id).getDefaultCombos(this.options.platform);
+    return this.getEffectiveMap().get(id) ?? [];
   }
 
   getEffectiveMap(): Map<AppShortcutId, AppShortcutCombo[]> {
@@ -109,6 +107,9 @@ export class AppShortcutStore {
       comboToElectronAccelerator(normalized, this.options.platform) === null
     ) {
       return 'menu-inexpressible';
+    }
+    if (def.scope === 'global' && !isGlobalAppShortcutComboUsable(normalized, this.options.platform)) {
+      return 'global-unusable';
     }
     const current = this.load();
     // 跨 id 冲突兜底 (renderer 已前置校验, 这里防多窗口并发 / 直调 IPC):

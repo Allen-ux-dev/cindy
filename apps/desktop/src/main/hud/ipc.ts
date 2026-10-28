@@ -278,7 +278,12 @@ export function attachHudWindow(win: BrowserWindow) {
   });
 }
 export function registerHudIpc() {
-  getAppShortcutStore().subscribe(() => pointer.refreshShortcut());
+  getAppShortcutStore().subscribe(() => {
+    // Release our old key before other global subscribers restore theirs. Register
+    // after the notification batch so swapped bindings do not collide on reset.
+    pointer.suspendShortcut(true);
+    queueMicrotask(() => pointer.suspendShortcut(isAppShortcutRecordingActive()));
+  });
   subscribeAppShortcutRecording((active) => pointer.suspendShortcut(active));
   pointer.suspendShortcut(isAppShortcutRecordingActive());
   const guard = (event: Electron.IpcMainInvokeEvent) => {
